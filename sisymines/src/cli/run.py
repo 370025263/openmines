@@ -9,7 +9,6 @@ import numpy as np
 
 # add the sisymines package to the path
 sys.path.append(str(pathlib.Path(__file__).parent.parent.parent.parent.absolute()))
-print(sys.path)
 
 from sisymines.src.mine import Mine
 from sisymines.src.truck import Truck
@@ -25,7 +24,7 @@ def load_config(filename):
     with open(filename, 'r') as file:
         return json.load(file)
 
-def main(config_file):
+def run_simulation(config_file=None):
     config = load_config(config_file)
 
     # 初始化矿山
@@ -95,16 +94,25 @@ def main(config_file):
     mine.add_road(road)
     mine.add_charging_site(charging_site)
 
-
-
-
     # 开始运行实验
-    mine.start(total_time=60 * 8)
+    mine.start(total_time=config['sim_time'])
+
+def main():
+    parser = argparse.ArgumentParser(description='Run a dispatch simulation of a mine with your DISPATCH algorithm and MINE config file')
+    subparsers = parser.add_subparsers(help='commands', dest='command')
+
+    # add command 'run'
+    run_parser = subparsers.add_parser('run', help='Run a simulation experiment')
+    run_parser.add_argument('-f', '--config-file', type=str, required=True, help='Path to the config file')
+
+    args = parser.parse_args()
+    if args.command == 'run':
+        print("args.config_file", args.config_file)
+        run_simulation(config_file=args.config_file)
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run mining simulation experiment")
-    parser.add_argument('config_file', help="Path to the mine configuration JSON file")
-    args = parser.parse_args()
+    config_path = sys.argv[1]
+    run_simulation(config_file=config_path)
 
-    main(args.config_file)
 

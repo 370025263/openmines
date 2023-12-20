@@ -58,5 +58,6 @@
                      [12,10,12],
                      [13,10,12]],
     "charging_to_load_road_matrix": [10,10,10]
-  }
+  },
+  "sim_time": 480
 }
