@@ -39,14 +39,6 @@ class LoadSite:
         print(f'{self.name} has {shovel_names}')
 
     def add_shovel(self, shovel:Shovel):
-
-        if "点3" in shovel.name:
-            a = self.name
-            b = self.shovel_list
-            c = []
-            for s in b:
-                c.append(s.name)
-            print("debug")
         self.shovel_list.append(shovel)
 
 
