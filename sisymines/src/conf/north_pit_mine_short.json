@@ -1,0 +1,96 @@
+{
+  "mine": {
+    "name": "北露天矿"
+  },
+  "dispatcher": {
+    "type": "NaiveDispatcher"
+  },
+  "charging_site": {
+    "name": "北露天矿-充电站",
+    "position": [0, 0],
+    "trucks": [
+      {"type": "油卡", "count": 1, "capacity": 30, "speed": 25},
+      {"type": "电卡", "count": 1, "capacity": 120, "speed": 10},
+      {"type": "卡车", "count": 1, "capacity": 50, "speed": 25}
+    ]
+  },
+  "load_sites": [
+    {
+      "name": "北露天矿-装载点1",
+      "position": [0.2, 0.2],
+      "shovels": [
+        {"name": "北露天矿-装载点1-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.03]},
+        {"name": "北露天矿-装载点1-铲车2", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.06]}
+      ],
+      "parkinglot": {
+        "name": "北露天矿-装载点1-停车场",
+        "position_offset": [0.06, 0.06]
+      }
+    },
+    {
+      "name": "北露天矿-装载点2",
+      "position": [0.2, 0.4],
+      "shovels": [
+        {"name": "北露天矿-装载点2-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.03]}
+      ],
+      "parkinglot": {
+        "name": "北露天矿-装载点2-停车场",
+        "position_offset": [0.06, 0.06]
+      }
+    },
+    {
+      "name": "北露天矿-装载点3",
+      "position": [0.2, 0.6],
+      "shovels": [
+        {"name": "北露天矿-装载点3-铲车1", "tons": 10, "cycle_time": 3,"position_offset": [0.03, 0.03]}
+      ],
+        "parkinglot": {
+            "name": "北露天矿-装载点3-停车场",
+            "position_offset": [0.06, 0.06]
+        }
+    }
+  ],
+  "dump_sites": [
+    {
+      "name": "北露天矿-卸载点1",
+      "position": [0.8, 0.2],
+      "dumpers": [
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+      ],
+        "parkinglot": {
+            "name": "北露天矿-卸载点1-停车场",
+            "position_offset": [0.06, 0.06]
+        }
+
+    },
+    {
+      "name": "北露天矿-卸载点2",
+      "position": [0.8, 0.4],
+      "dumpers": [
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+      ],
+        "parkinglot": {
+            "name": "北露天矿-卸载点2-停车场",
+            "position_offset": [0.06, 0.06]
+        }
+    },
+    {
+      "name": "北露天矿-卸载点3",
+      "position": [0.8, 0.6],
+      "dumpers": [
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+      ],
+        "parkinglot": {
+            "name": "北露天矿-卸载点3-停车场",
+            "position_offset": [0.06, 0.06]
+        }
+    }
+  ],
+  "road": {
+    "road_matrix": [[10,10,12],
+                     [12,10,12],
+                     [13,10,12]],
+    "charging_to_load_road_matrix": [10,10,10]
+  },
+  "sim_time": 120
+}

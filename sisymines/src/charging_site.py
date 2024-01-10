@@ -7,8 +7,9 @@ this file is for the charging site
 from __future__ import annotations
 
 class ChargingSite:
-    def __init__(self, name:str):
+    def __init__(self, name:str,position:tuple=(0,0)):
         self.name = name
+        self.position = position
         self.mine = None
         self.trucks = []
 

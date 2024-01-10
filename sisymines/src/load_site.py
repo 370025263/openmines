@@ -1,8 +1,11 @@
 import simpy
 
 class ParkingLot:
-    def __init__(self):
-        pass
+    def __init__(self,name:str,position:tuple):
+        self.name = name
+        self.position = position
+        self.queue_status = dict()
+
 
     def get_waiting_trucks(self, resource_list:list[simpy.Resource])->int:
         waiting_trucks = []
@@ -10,9 +13,34 @@ class ParkingLot:
             waiting_trucks += resource.queue
         return len(waiting_trucks)
 
+    def monitor_resources(self, env, resources, monitor_interval=1):
+        """监控停车场对应所有资源的排队长度
+            可以做到铲子、dumper单体级别的排队长度
+        """
+        self.queue_status["total"] = dict()
+        while True:
+            # 记录当前的排队长度
+            all_queue_len = sum([len(resource.queue) for resource in resources])
+            self.queue_status["total"][int(env.now)] = all_queue_len
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
+
+    def monitor_resource(self, env, res_name, resource, monitor_interval=1):
+        """监控停车场对应资源的排队长度
+            可以做到铲子、dumper单体级别的排队长度
+        """
+        self.queue_status[res_name] = dict()
+        while True:
+            # 记录当前的排队长度
+            self.queue_status[res_name][int(env.now)] = len(resource.queue)
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
+
 class Shovel:
-    def __init__(self, name:str, shovel_tons:float, shovel_cycle_time:float):
+    def __init__(self, name:str, shovel_tons:float, shovel_cycle_time:float,position_offset:tuple=(0, 0.05)):
         self.name = name
+        self.position = None
+        self.position_offset = position_offset
         self.shovel_tons = shovel_tons
         self.shovel_cycle_time = shovel_cycle_time  # shovel-vehicle time took for one shovel of mine
 
@@ -22,10 +50,11 @@ class Shovel:
 
 
 class LoadSite:
-    def __init__(self, name:str):
+    def __init__(self, name:str, position:tuple):
         self.name = name
+        self.position = position
         self.shovel_list = []
-        self.parking_lot = ParkingLot()
+        self.parking_lot = None
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -39,8 +68,15 @@ class LoadSite:
         print(f'{self.name} has {shovel_names}')
 
     def add_shovel(self, shovel:Shovel):
+        # 铲子的位置是相对于卸载点的位置，和dumper的数目*偏移不同
+        shovel.position = tuple(a + b for a, b in zip(self.position, shovel.position_offset))
         self.shovel_list.append(shovel)
 
+    def add_parkinglot(self, position_offset, name: str = None):
+        if name is None:
+            name = f'{self.name}_parking_lot'
+        park_position = tuple(a + b for a, b in zip(self.position, position_offset))
+        self.parking_lot = ParkingLot(name=name, position=park_position)
 
     def get_available_shovel(self)->Shovel:
         """
