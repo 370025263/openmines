@@ -48,6 +48,8 @@ class NaiveDispatcher(BaseDispatcher):
 then you can run the simulation with the following command:
 ```shell
 sisymines -f <config_file>
+# or
+sisymines run -f <config_file>
 ```
 after the simulation, you can find the simulation ticks in the $CWD/result folder.
 the result folder will contain the following files:
@@ -57,7 +59,8 @@ the result folder will contain the following files:
 ## 4. Visualize the result
 you can visualize the result with the following command:
 ```shell
-# sisymines -v <result_file> #todo
+sisymines -v <result_file>
+# or 
 sisymines visualize -f <result_file>
 ```
 the result will be a gif file in the $CWD/result folder.

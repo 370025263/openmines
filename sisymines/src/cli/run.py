@@ -117,6 +117,11 @@ def main():
     parser = argparse.ArgumentParser(description='Run a dispatch simulation of a mine with your DISPATCH algorithm and MINE config file')
     subparsers = parser.add_subparsers(help='commands', dest='command')
 
+    # 直接访问入口 sisymine -f config.json, sisymine -v tick.json
+    # 添加运行参数 '-f' 和 '-v'
+    parser.add_argument('-f', '--config-file', type=str, help='Path to the config file')
+    parser.add_argument('-v', '--tick-file', type=str, help='Path to the simulation tick file')
+
     # add command 'run'
     run_parser = subparsers.add_parser('run', help='Run a simulation experiment')
     run_parser.add_argument('-f', '--config-file', type=str, required=True, help='Path to the config file')
@@ -126,6 +131,14 @@ def main():
     visualize_parser.add_argument('-f', '--tick-file', type=str, required=True, help='Path to the simulation tick file')
 
     args = parser.parse_args()
+    # 如command为空，那么检查f/v参数是否存在，如果不存在则print help；如果存在f/v参数则执行run/visualize
+    if args.command is None:
+        if args.config_file is None and args.tick_file is None:
+            parser.print_help()
+        elif args.config_file is not None:
+            run_simulation(config_file=args.config_file)
+        elif args.tick_file is not None:
+            run_visualization(tick_file=args.tick_file)
     if args.command == 'run':
         print("args.config_file", args.config_file)
         run_simulation(config_file=args.config_file)
