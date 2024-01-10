@@ -4,8 +4,11 @@ import pathlib
 import sys
 import pkgutil
 import importlib
+from datetime import time
 
 import numpy as np
+
+from sisymines.src.utils.visualization.graphher import VisualGrapher
 
 # add the sisymines package to the path
 sys.path.append(str(pathlib.Path(__file__).parent.parent.parent.parent.absolute()))
@@ -51,7 +54,7 @@ def run_simulation(config_file=None):
     assert mine.dispatcher is not None, f"Dispatcher {dispatcher_type} not found"
 
     # 初始化充电站和卡车
-    charging_site = ChargingSite(config['charging_site']['name'])
+    charging_site = ChargingSite(config['charging_site']['name'], position=config['charging_site']['position'])
     for truck_config in config['charging_site']['trucks']:
         for _ in range(truck_config['count']):
             truck = Truck(
@@ -63,26 +66,32 @@ def run_simulation(config_file=None):
 
     # 初始化装载点和铲车
     for load_site_config in config['load_sites']:
-        load_site = LoadSite(load_site_config['name'])
+        load_site = LoadSite(name=load_site_config['name'], position=load_site_config['position'])
         for shovel_config in load_site_config['shovels']:
             shovel = Shovel(
                 name=shovel_config['name'],
                 shovel_tons=shovel_config['tons'],
-                shovel_cycle_time=shovel_config['cycle_time']
+                shovel_cycle_time=shovel_config['cycle_time'],
+                position_offset=shovel_config['position_offset']
             )
             load_site.add_shovel(shovel)
+        load_site.add_parkinglot(position_offset=load_site_config['parkinglot']['position_offset'],
+                                 name=load_site_config['parkinglot']['name'])
         mine.add_load_site(load_site)
 
     # 初始化卸载点和卸载机
     for dump_site_config in config['dump_sites']:
-        dump_site = DumpSite(dump_site_config['name'])
+        dump_site = DumpSite(dump_site_config['name'], position=dump_site_config['position'])
         for dumper_config in dump_site_config['dumpers']:
             for _ in range(dumper_config['count']):
                 dumper = Dumper(
                     name=f"{dump_site_config['name']}-点位{_}",
-                    dumper_cycle_time=dumper_config['cycle_time']
+                    dumper_cycle_time=dumper_config['cycle_time'],
+                    position_offset=dumper_config['position_offset']
                 )
                 dump_site.add_dumper(dumper)
+        dump_site.add_parkinglot(position_offset=dump_site_config['parkinglot']['position_offset'],
+                                    name=dump_site_config['parkinglot']['name'])
         mine.add_dump_site(dump_site)
 
     # 初始化道路
@@ -97,6 +106,13 @@ def run_simulation(config_file=None):
     # 开始运行实验
     mine.start(total_time=config['sim_time'])
 
+
+def run_visualization(tick_file=None):
+    visual_grapher = VisualGrapher(tick_file)
+    # 构造路径和文件名字
+    gif_file = tick_file.strip('.json') + '.gif'
+    visual_grapher.create_animation(output_path=gif_file)
+
 def main():
     parser = argparse.ArgumentParser(description='Run a dispatch simulation of a mine with your DISPATCH algorithm and MINE config file')
     subparsers = parser.add_subparsers(help='commands', dest='command')
@@ -105,10 +121,17 @@ def main():
     run_parser = subparsers.add_parser('run', help='Run a simulation experiment')
     run_parser.add_argument('-f', '--config-file', type=str, required=True, help='Path to the config file')
 
+    # add command visualize
+    visualize_parser = subparsers.add_parser('visualize', help='Visualize a simulation experiment')
+    visualize_parser.add_argument('-f', '--tick-file', type=str, required=True, help='Path to the simulation tick file')
+
     args = parser.parse_args()
     if args.command == 'run':
         print("args.config_file", args.config_file)
         run_simulation(config_file=args.config_file)
+    if args.command == 'visualize':
+        tick_file = args.tick_file
+        run_visualization(tick_file=tick_file)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,7 @@ from sisymines.src.dispatcher import BaseDispatcher
 class NaiveDispatcher(BaseDispatcher):
     def __init__(self):
         super().__init__()
+        self.name = "NaiveDispatcher"
 
     def give_init_order(self, truck: "Truck", mine: "Mine") -> int:
         # 从第一个load site开始
