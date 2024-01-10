@@ -6,6 +6,11 @@ __pycache__/
 # .DS_Store
 *DS_Store
 
+# result
+sisymines/src/results/*
+# test
+sisymines/src/test/*
+
 # C extensions
 *.so
 
