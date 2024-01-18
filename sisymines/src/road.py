@@ -6,6 +6,7 @@ import random
 from sisymines.src.charging_site import ChargingSite
 from sisymines.src.dump_site import DumpSite
 from sisymines.src.load_site import LoadSite
+from sisymines.src.utils.event import Event
 
 
 class Road:
@@ -70,6 +71,15 @@ class Road:
                 repair_duration = max(0, np.random.normal(self.mu_repair_duration, self.sigma_repair_duration))
                 in_repair = True
                 repair_end_time = self.env.now + repair_duration
+                self.mine.random_event_pool.add_event(Event(self.env.now, "RoadEvent:repair",
+                                                            f'Road from {current_site.name} '
+                                                        f'to {target_site.name} is in repair, '
+                                                        f'the repair will last for {repair_duration:.2f} mins, '
+                                                        f'and will end at {repair_end_time:.2f}, '
+                                                        f'vehicle on this road will have to suffer punish_distance.',
+                                                        info={"road_id": road_id, "repair_end_time": repair_end_time,
+                                                              "repair_duration": repair_duration,
+                                                              }))
                 self.logger.info(
                     f"[RoadEvent] Road from {current_site.name} to {target_site.name} is in repair，"
                     f"the repair will last for {repair_duration:.2f} mins, and will end at {repair_end_time:.2f}, "

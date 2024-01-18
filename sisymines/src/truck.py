@@ -105,6 +105,11 @@ class Truck:
         if time_to_jam < jam_time:
             # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
             is_jam = True if len(truck_positions) > 3 else False
+            self.mine.random_event_pool.add_event(Event(self.env.now + time_to_jam, "RoadEvent:jam",
+                                                        f'Truck:[{self.name}] is jammed at road from {self.current_location.name} '
+                                                        f'to {self.target_location.name} for {jam_time:.2f} minutes',
+                                                        info={"name": self.name, "status": "jam", "speed": 0,
+                                                                "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
             self.logger.info(f"Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
         else:
             is_jam = False

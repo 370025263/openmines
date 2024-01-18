@@ -68,6 +68,17 @@ class EventPool:
                     list_event.append(self.event_set[t])
             return list_event
 
+    def get_event_by_time_range(self, start_time:float, end_time:float)->list:
+        """
+        给定一个时间范围，获取当前时间之前的顺序的event列表
+        :param time:
+        :return:
+        """
+        list_event = []
+        for t in sorted(self.event_set.keys()):
+            if start_time <= t <= end_time:
+                list_event.append(self.event_set[t])
+        return list_event
 
     def update_last_info(self, type:str, info:dict,strict:bool=True):
         """
@@ -110,6 +121,13 @@ class EventPool:
 
     def clear(self):
         self.event_set.clear()
+
+class RandomEventPool:
+    """
+    1.用来记录在模拟运行过程中的随机事件以供后期分析
+    2.在算法派车决策时，提供现有的随机事件
+    """
+    pass
 
 
 if __name__ == "__main__":

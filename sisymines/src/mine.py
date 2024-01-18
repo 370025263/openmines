@@ -20,6 +20,7 @@ from sisymines.src.road import Road
 from sisymines.src.truck import Truck
 from sisymines.src.utils.logger import MineLogger, LOG_FILE_PATH
 from sisymines.src.utils.ticker import TickGenerator
+from sisymines.src.utils.event import EventPool
 
 class Mine:
     def __init__(self, name:str, log_path=LOG_FILE_PATH, log_file_level=logging.DEBUG, log_console_level=logging.INFO):
@@ -30,6 +31,7 @@ class Mine:
         self.trucks = []
         self.road = None
         self.dispatcher = None
+        self.random_event_pool = EventPool()  # 随机事件池
         # LOGGER配置
         self.global_logger = MineLogger(log_path=log_path, file_level=log_file_level, console_level=log_console_level)
         self.mine_logger = self.global_logger.get_logger(name)
