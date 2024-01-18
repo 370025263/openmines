@@ -14,6 +14,9 @@ class Event:
 
 
 class EventPool:
+    """
+    用来存储卡车运行事件的类，便于后期统计分析
+    """
     def __init__(self):
         self.event_set = dict()
 

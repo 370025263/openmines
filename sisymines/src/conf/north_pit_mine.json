@@ -86,11 +86,15 @@
         }
     }
   ],
-  "road": {
-    "road_matrix": [[10,10,12],
-                     [12,10,12],
-                     [13,10,12]],
-    "charging_to_load_road_matrix": [10,10,10]
-  },
-  "sim_time": 480
+"road": {
+    "road_matrix": [[10, 10, 12],
+                    [12, 10, 12],
+                    [13, 10, 12]],
+    "charging_to_load_road_matrix": [10, 10, 10],
+    "road_event_params": {
+        "lambda_repair": 0.00833,
+        "mu_repair_duration": 50
+    }
+},
+  "sim_time": 1440
 }
