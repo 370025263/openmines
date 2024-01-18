@@ -1,4 +1,9 @@
+import numpy as np
 import simpy
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.stats import norm
+
 
 from sisymines.src.charging_site import ChargingSite
 from sisymines.src.dump_site import DumpSite, Dumper
@@ -34,6 +39,9 @@ class Truck:
         self.truck_capacity = truck_capacity  # truck capacity in tons
         self.truck_speed = truck_speed  # truck speed in km/h
         self.current_location = None
+        self.target_location = None
+        self.journey_start_time = None
+        self.journey_coverage = None
         self.event_pool = EventPool()
 
     def set_env(self, mine:"Mine"):
@@ -53,13 +61,53 @@ class Truck:
         assert target_location is not self.current_location, "target_location can not be the same as current_location"
         assert distance >= 0, "distance can not be negative"
         assert self.truck_speed > 0, "truck_speed can not be negative"
+        # 记录当前路程的信息
+        self.target_location = target_location
+        self.journey_start_time = self.env.now
         if manual_speed is not None:
             assert manual_speed > 0, "manual_speed can not be negative"
             duration = (distance / manual_speed)*60  # in minutes
         else:
             duration = (distance / self.truck_speed)*60
         self.truck_speed = manual_speed if manual_speed is not None else self.truck_speed
-        
+
+        # 分析当前道路中的车辆情况，并随机生成一个延迟时间用来模拟交通堵塞
+        # 获取其他车辆的引用
+        other_trucks = self.mine.trucks
+        # 筛选出出发地和目的地跟本车相同的车辆
+        other_trucks_on_road = [truck for truck in other_trucks if truck.current_location == self.current_location and
+                                                            truck.target_location == self.target_location]
+        # 为每个同路的车辆根据当前时间计算route_coverage数值
+        for truck in other_trucks_on_road:
+            truck.journey_coverage = truck.get_route_coverage(distance)
+        # 假设每个车辆导致堵车的概率在route_coverage上满足正态分布，均值为route_coverage，方差为0.1
+        # other_trucks_on_road中的每个车导致堵车的概率会叠加在一起取平均成为最终的堵车概率分布
+        truck_positions = [truck.journey_coverage for truck in other_trucks_on_road]
+        # 每个卡车的正态分布的标准差
+        sd = 0.1  # 根据3sigma原则，这个值代表这个车辆对堵车的影响会在+-0.3总路程的范围内
+        # 位置的范围
+        x = np.linspace(0, 1, 1000)
+        # 初始化堵车的概率为0
+        total_prob = np.zeros_like(x)
+        # 对每辆卡车
+        for i, position in enumerate(truck_positions):
+            # 计算在每个位置的堵车概率
+            prob = norm.pdf(x, position, sd)
+            # 将这个卡车的堵车概率加到总的堵车概率上
+            total_prob = total_prob + prob
+        # 正规化总的堵车概率
+        total_prob = total_prob / len(truck_positions)
+        # 使用蒙特卡洛方法来决定是否会发生堵车
+        jam_position = np.random.choice(x, p=total_prob / np.sum(total_prob))
+        # 在jam_position处使用weibull分布，采样一个可能的堵车时间
+        jam_time = np.random.weibull(2) * 10
+        time_to_jam = jam_position * duration
+        if time_to_jam < jam_time:
+            # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
+            is_jam = True if len(truck_positions) > 3 else False
+            self.logger.info(f"Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time} minutes")
+        else:
+            is_jam = False
 
         # 判断目标地点的类型
         if isinstance(target_location, LoadSite) or isinstance(target_location, ChargingSite):
@@ -78,7 +126,7 @@ class Truck:
         # TODO: 实际上move的end_time是不确定的，因为move的过程中可能会有其他的event发生，比如堵车、滑坡等
         #       这里暂时先不考虑这种情况，后续可以考虑加入这种情况
         #       可以end_time先留空 然后对当前时间的主干取hash值然后后期遇到突发时间 那么就拿过来修改
-        yield self.env.timeout(duration)
+        yield self.env.timeout(duration+is_jam*jam_time)
         # 补全数据
         last_move_event = self.event_pool.get_last_event(type=event_name, strict=True)
         last_move_event.info["end_time"] = self.env.now
@@ -93,11 +141,7 @@ class Truck:
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Start loading at shovel {shovel.name}, load time is {load_time}')
         yield self.env.timeout(load_time)
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish loading at shovel {shovel.name}')
-        # self.event_pool.add_event(Event(self.env.now, "load", f'Truck:[{self.name}] Finish loading at shovel {shovel.name}',
-        #                           info={"name": self.name, "status": "loading",
-        #                                 "start_time": self.env.now-load_time, "end_time": self.env.now,
-        #                                 "shovel": shovel.name, "load_duration": load_time}))
-        # WARN:这里load和get shovel重复了
+
     def unload(self, dumper:Dumper):
         unload_time:float = dumper.dump_time
         yield self.env.timeout(unload_time)
@@ -276,3 +320,24 @@ class Truck:
         if wait_time == float('inf'):
             wait_time = 0
         return wait_time
+
+    def get_route_coverage(self,distance)->float:
+        """
+        获取一次循环的路程覆盖率 0-1
+        0代表刚刚出发 1代表完成
+        这里只是一种近似，没有考虑到当前路途的交通情况
+        :return:
+        """
+        assert distance > 0, "distance must be greater than 0"
+        assert self.journey_start_time is not None, "journey_start_time must be not None, is the truck journey started?"
+
+        # 获取当前环境时间
+        current_time = self.env.now
+        # 获取卡车的速度
+        speed = self.truck_speed
+        # 获取卡车的总共预期行驶时间
+        total_travel_time = (distance/speed)*60  # 单位：分钟
+        # 获取卡车的路程覆盖率
+        coverage = (current_time - self.journey_start_time)/total_travel_time
+        return coverage
+

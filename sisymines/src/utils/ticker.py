@@ -134,7 +134,8 @@ class TickGenerator:
                     # 时间计算
                     last_event = past_events[-1]
                     cur_time_delta = cur_time - last_event.info["start_time"]
-                    time_ratio = cur_time_delta / (last_event.info["est_end_time"] - last_event.info["start_time"])
+                    end_time = last_event.info["end_time"] if last_event.info["end_time"] is not None else last_event.info["est_end_time"]
+                    time_ratio = cur_time_delta / (end_time - last_event.info["start_time"])
                     # 方向计算
                     cur_load_site = self.mine.get_dest_obj_by_name(last_event.info["start_location"])
                     target_unload_site = self.mine.get_dest_obj_by_name(last_event.info["target_location"])
@@ -183,7 +184,8 @@ class TickGenerator:
                     # 时间计算
                     last_event = past_events[-1]
                     cur_time_delta = cur_time - last_event.info["start_time"]
-                    time_ratio = cur_time_delta / (last_event.info["est_end_time"] - last_event.info["start_time"])
+                    end_time = last_event.info["end_time"] if last_event.info["end_time"] is not None else last_event.info["est_end_time"]
+                    time_ratio = cur_time_delta / (end_time - last_event.info["start_time"])
                     # 方向计算
                     cur_unload_site = self.mine.get_dest_obj_by_name(last_event.info["start_location"])
                     target_load_site = self.mine.get_dest_obj_by_name(last_event.info["target_location"])
