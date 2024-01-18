@@ -65,21 +65,23 @@ class Road:
         if self.env.now < repair_end_time:
             in_repair = True
         else:
-            # 检查是否发生检修
-            if random.expovariate(self.lambda_repair) < 1:  # 使用指数分布生成随机数，模拟检修事件发生
+            # 计算下一次检修可能发生的时间
+            next_repair_time = repair_end_time + random.expovariate(self.lambda_repair)
+            if self.env.now >= next_repair_time:  # 判断是否发生检修
                 # 生成检修持续时间
                 repair_duration = max(0, np.random.normal(self.mu_repair_duration, self.sigma_repair_duration))
                 in_repair = True
                 repair_end_time = self.env.now + repair_duration
                 self.mine.random_event_pool.add_event(Event(self.env.now, "RoadEvent:repair",
                                                             f'Road from {current_site.name} '
-                                                        f'to {target_site.name} is in repair, '
-                                                        f'the repair will last for {repair_duration:.2f} mins, '
-                                                        f'and will end at {repair_end_time:.2f}, '
-                                                        f'vehicle on this road will have to suffer punish_distance.',
-                                                        info={"road_id": road_id, "repair_end_time": repair_end_time,
-                                                              "repair_duration": repair_duration,
-                                                              }))
+                                                            f'to {target_site.name} is in repair, '
+                                                            f'the repair will last for {repair_duration:.2f} mins, '
+                                                            f'and will end at {repair_end_time:.2f}, '
+                                                            f'vehicle on this road will have to suffer punish_distance.',
+                                                            info={"road_id": road_id,
+                                                                  "repair_end_time": repair_end_time,
+                                                                  "repair_duration": repair_duration,
+                                                                  }))
                 self.logger.info(
                     f"[RoadEvent] Road from {current_site.name} to {target_site.name} is in repair，"
                     f"the repair will last for {repair_duration:.2f} mins, and will end at {repair_end_time:.2f}, "
