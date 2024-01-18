@@ -82,11 +82,15 @@ class Road:
 
         return in_repair
 
-    def get_distance(self, truck: "Truck", target_site) -> float:
+    def get_distance(self, truck: "Truck", target_site, enable_event:bool=True) -> float:
         current_site = truck.current_location
 
-        # 检查道路是否可用
-        in_repair = self.check_availability(current_site, target_site)
+        # 如果只是检查道路可用性，则不触发随机事件
+        if not enable_event:
+            in_repair = False
+        else:
+            # 检查道路是否可用，并对检修状态进行模拟
+            in_repair = self.check_availability(current_site, target_site)
 
         # 正常情况下计算距离
         current_site = truck.current_location
