@@ -149,6 +149,6 @@ class ImageHandler(HandlerBase):
 
 
 if __name__ == '__main__':
-    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 20:14:34.json"
+    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 22:10:28.json"
     visualizer = VisualGrapher(path)
     visualizer.create_animation(output_path='output.gif')

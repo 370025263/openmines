@@ -106,8 +106,13 @@ class TickGenerator:
                     # 计算卡车位置
                     # 等待装载位置=装载区位置+停车场相对位置偏移=停车场位置
                     truck_cur_location_name = truck.current_location.name
-                    parkinglot = self.mine.get_dest_obj_by_name(truck_cur_location_name).parking_lot
-                    truck_position = np.array(parkinglot.position)  # 已经处理过
+                    cur_load_site = self.mine.get_dest_obj_by_name(truck_cur_location_name)
+                    parkinglot = cur_load_site.parking_lot
+
+                    queue_index = past_events[-1].info["queue_index"]
+                    shovel_name = past_events[-1].info["shovel"]
+                    shovel = self.mine.get_service_vehicle_by_name(shovel_name)
+                    truck_position = np.array(shovel.position) - np.array([0.05, 0.0]) - (queue_index+1)*np.array([0.035,0.0])  # 已经处理过
 
                 ## 车辆在装载点装载
                 if past_events[-1].event_type=="get shovel":
@@ -120,7 +125,8 @@ class TickGenerator:
                     # 计算卡车位置
                     # 装载位置=装载区位置+铲子相对位置偏移=铲子位置
                     shovel = self.mine.get_service_vehicle_by_name(past_events[-1].info["shovel"])
-                    truck_position = np.array(shovel.position)  # 已经处理过
+                    loading_position = np.array(shovel.position) - np.array([0.05, 0.0])
+                    truck_position = loading_position
 
                 ## 车辆满载 从装载点前往卸载点中
                 if past_events[-1].event_type=="haul":

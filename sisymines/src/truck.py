@@ -217,6 +217,23 @@ class Truck:
         #                                 "dumper": dumper.name, "unload_duration": unload_time}))
         # WARN：这里unload和get dumper重复了
 
+    def check_queue_position(self, shovel, request):
+        """
+        检查并返回矿车在等待队列中的位置
+        :param shovel: 要检查队列的铲车
+        :param request: 矿车的资源请求对象
+        :return: 队列中的位置（从0开始计数）
+        """
+        try:
+            if len(shovel.res.queue) == 0:
+                return 0
+            elif shovel.res.queue.index(request) == 0:
+                return 0
+            else:
+                return shovel.res.queue.index(request)
+        except ValueError:
+            return 0  # 如果请求不在队列中，则返回-1
+
     def run(self):
         """
         矿车运行的主干入口函数
@@ -259,8 +276,10 @@ class Truck:
 
             with shovel.res.request() as req:
                 # 申请到资源之前的操作
+                truck_queue_index = self.check_queue_position(shovel, req)
                 self.event_pool.add_event(Event(self.env.now, "wait shovel", f'Truck:[{self.name}] Wait shovel {shovel.name}',
                                                 info={"name": self.name, "status": "waiting for shovel",
+                                                      "queue_index": truck_queue_index,
                                                       "start_time": self.env.now, "end_time": None,
                                                       "shovel": shovel.name, "wait_duration": None}))
                 self.status = "waiting for shovel"
