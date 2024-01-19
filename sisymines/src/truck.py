@@ -162,11 +162,11 @@ class Truck:
         4.车辆移动前往目的地的模拟
         """
         # 判断目标地点的类型
-        if isinstance(target_location, LoadSite) or isinstance(target_location, ChargingSite):
-            # 如果是装载区
+        if isinstance(self.current_location, DumpSite) and isinstance(target_location, LoadSite):
             event_name = "unhaul"
+        elif isinstance(self.current_location, ChargingSite):
+            event_name = "init"
         else:
-            # 如果是卸载区
             event_name = "haul"
 
         self.event_pool.add_event(Event(self.env.now, event_name, f'Truck:[{self.name}] moves at {target_location.name}',
@@ -228,8 +228,8 @@ class Truck:
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Activated at {self.env.now}, Target load site is ORDER({dest_load_index}):{load_site.name}, move distance is {move_distance}')
-        self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Activated at {self.env.now}, Target load site is ORDER({dest_load_index}):{load_site.name}, move distance is {move_distance}',
-                                        info={"name": self.name, "status": "ORDER",
+        self.event_pool.add_event(Event(self.env.now, "INIT ORDER", f'Truck:[{self.name}] Activated at {self.env.now}, Target load site is ORDER({dest_load_index}):{load_site.name}, move distance is {move_distance}',
+                                        info={"name": self.name, "status": "INIT ORDER",
                                               "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
                                               "start_location": self.current_location.name,
                                               "target_location": load_site.name,

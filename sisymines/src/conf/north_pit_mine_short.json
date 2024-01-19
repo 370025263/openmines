@@ -17,36 +17,36 @@
   "load_sites": [
     {
       "name": "北露天矿-装载点1",
-      "position": [0.2, 0.2],
+      "position": [0.1, 0.2],
       "shovels": [
-        {"name": "北露天矿-装载点1-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.03]},
-        {"name": "北露天矿-装载点1-铲车2", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.06]}
+        {"name": "北露天矿-装载点1-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.1, 0.1]},
+        {"name": "北露天矿-装载点1-铲车2", "tons": 0.5, "cycle_time": 1,"position_offset": [0.1, 0.2]}
       ],
       "parkinglot": {
         "name": "北露天矿-装载点1-停车场",
-        "position_offset": [0.06, 0.06]
+        "position_offset": [0.1, 0.15]
       }
     },
     {
       "name": "北露天矿-装载点2",
-      "position": [0.2, 0.4],
+      "position": [0.1, 0.5],
       "shovels": [
-        {"name": "北露天矿-装载点2-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.03, 0.03]}
+        {"name": "北露天矿-装载点2-铲车1", "tons": 0.5, "cycle_time": 1,"position_offset": [0.1, 0.1]}
       ],
       "parkinglot": {
         "name": "北露天矿-装载点2-停车场",
-        "position_offset": [0.06, 0.06]
+        "position_offset": [0.1, 0.15]
       }
     },
     {
       "name": "北露天矿-装载点3",
-      "position": [0.2, 0.6],
+      "position": [0.1, 0.8],
       "shovels": [
-        {"name": "北露天矿-装载点3-铲车1", "tons": 10, "cycle_time": 3,"position_offset": [0.03, 0.03]}
+        {"name": "北露天矿-装载点3-铲车1", "tons": 10, "cycle_time": 3,"position_offset": [0.1, 0.1]}
       ],
         "parkinglot": {
             "name": "北露天矿-装载点3-停车场",
-            "position_offset": [0.06, 0.06]
+            "position_offset": [0.1, 0.15]
         }
     }
   ],
@@ -55,7 +55,7 @@
       "name": "北露天矿-卸载点1",
       "position": [0.8, 0.2],
       "dumpers": [
-        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.05]}
       ],
         "parkinglot": {
             "name": "北露天矿-卸载点1-停车场",
@@ -65,9 +65,9 @@
     },
     {
       "name": "北露天矿-卸载点2",
-      "position": [0.8, 0.4],
+      "position": [0.8, 0.5],
       "dumpers": [
-        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.05]}
       ],
         "parkinglot": {
             "name": "北露天矿-卸载点2-停车场",
@@ -76,9 +76,9 @@
     },
     {
       "name": "北露天矿-卸载点3",
-      "position": [0.8, 0.6],
+      "position": [0.8, 0.8],
       "dumpers": [
-        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.01]}
+        {"count": 2, "cycle_time": 1, "position_offset": [0.00, 0.05]}
       ],
         "parkinglot": {
             "name": "北露天矿-卸载点3-停车场",

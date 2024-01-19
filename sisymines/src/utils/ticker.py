@@ -13,15 +13,16 @@ PROJECT_ROOT_PATH = Path(__file__).parent.parent.parent
 LOG_FILE_PATH = PROJECT_ROOT_PATH / "src" / "data" / "logs"
 
 # 车辆状态
-ON_CHARGING_SITE = -1
-ON_ROAD_TO_FIRST_LOAD = -2
-UNHAULING = 0
-WAIT_FOR_LOAD = 1
-LOADING = 2
-HAULING = 3
-WAIT_FOR_DUMP = 4
-DUMPING = 5
-REPAIRING = 6
+ON_CHARGING_SITE = -1  # 在充电站
+ON_ROAD_TO_FIRST_LOAD = -2  # 从充电站到第一个装载点
+UNHAULING = 0  # 从卸载区到装载区
+WAIT_FOR_LOAD = 1  # 等待装载
+LOADING = 2  # 装载中
+HAULING = 3  # 从装载区到卸载区
+WAIT_FOR_DUMP = 4  # 等待卸载
+DUMPING = 5  # 卸载中
+REPAIRING = 6  # 维修中
+UNREPAIRABLE = 7  # 无法维修，返回充电场
 
 class TickGenerator:
     """
@@ -74,8 +75,8 @@ class TickGenerator:
                     status = -1  # 没有事件、仅有一个调度事件==还在空载状态，位置处于充电站
                     truck_position = np.array(charging_site.position) + np.array([0.0, 0.0])
                 ## 车辆在从充电场到装载点的路上
-                if len(past_events)==2 and future_events[0].event_type=="wait shovel":
-                    """unhaul example:
+                if len(past_events)==2 and past_events[-1].event_type=="init":
+                    """init example:
                         info={"name": self.name, "status": event_name, "speed": manual_speed if manual_speed is not None else self.truck_speed,
                                               "start_time": self.env.now, "est_end_time": self.env.now+duration, "end_time": None,
                                               "start_location": self.current_location.name,
@@ -223,6 +224,8 @@ class TickGenerator:
                 total_queue_length = loadsite.parking_lot.queue_status["total"].get(cur_time,0)
                 load_site_tick = {
                     "name":loadsite.name,
+                    "tons":loadsite.tons,
+                    "truck_service_count":loadsite.truck_service_count,
                     "time":cur_time,
                     "total_queue_length":total_queue_length,
                     "shovel_queue_length":{},
@@ -235,6 +238,8 @@ class TickGenerator:
                     load_site_tick["shovel_queue_length"][shovel.name] = shovel_queue_length
                     shovel_tick = {
                         "name":shovel.name,
+                        "tons":shovel.tons,
+                        "truck_service_count":shovel.truck_service_count,
                         "time":cur_time,
                         "queue_length":shovel_queue_length,
                         "position":(shovel.position),
@@ -249,6 +254,8 @@ class TickGenerator:
                 total_queue_length = dumpsite.parking_lot.queue_status["total"].get(cur_time,0)
                 dump_site_tick = {
                     "name":dumpsite.name,
+                    "tons":dumpsite.tons,
+                    "truck_service_count":dumpsite.truck_service_count,
                     "time":cur_time,
                     "total_queue_length":total_queue_length,
                     "dumper_queue_length":{},
@@ -261,12 +268,21 @@ class TickGenerator:
                     dump_site_tick["dumper_queue_length"][dumper.name] = dumper_queue_length
                     dumper_tick = {
                         "name":dumper.name,
+                        "tons":dumper.tons,
+                        "truck_service_count":dumper.truck_service_count,
                         "time":cur_time,
                         "queue_length":dumper_queue_length,
                         "position":list(dumper.position),
                     }
                     dumper_states[dumper.name] = dumper_tick
                 dump_site_states[dumpsite.name] = dump_site_tick
+
+            # 统计矿山整体信息
+            mine_tick = {
+                "time":cur_time,
+                "total_tons":self.mine.total_tons,
+                "waiting_truck_count":self.mine.waiting_truck_count,
+            }
 
 
             tick_packet = {
@@ -276,6 +292,7 @@ class TickGenerator:
                 "dump_site_states":dump_site_states,
                 "shovel_states":shovel_states,
                 "dumper_states":dumper_states,
+                "mine_states":mine_tick
             }
             self.ticks[cur_time] = tick_packet
 
