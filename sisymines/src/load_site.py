@@ -41,12 +41,27 @@ class Shovel:
         self.name = name
         self.position = None
         self.position_offset = position_offset
-        self.shovel_tons = shovel_tons
+        self.shovel_tons = shovel_tons  # the size of shovel bucket
+        self.produced_tons = 0  # the produced tons of shovel
+        self.service_count = 0  # the number of shovel-vehicle cycle
         self.shovel_cycle_time = shovel_cycle_time  # shovel-vehicle time took for one shovel of mine
+        self.status = dict()  # the status of shovel
 
     def set_env(self, env:simpy.Environment):
         self.env = env
         self.res = simpy.Resource(env, capacity=1)
+
+    def monitor_status(self, env, monitor_interval=1):
+        """监控铲车的产量、服务次数等信息
+        """
+        while True:
+            # 获取铲车信息
+            self.status[int(env.now)] = {
+                "produced_tons": self.produced_tons,
+                "service_count": self.service_count,
+            }
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
 
 
 class LoadSite:
@@ -55,11 +70,30 @@ class LoadSite:
         self.position = position
         self.shovel_list = []
         self.parking_lot = None
+        self.status = dict()  # the status of shovel
+        self.produced_tons = 0  # the produced tons of shovel
+        self.service_count = 0  # the number of shovel-vehicle cycle
 
     def set_env(self, env:simpy.Environment):
         self.env = env
         for shovel in self.shovel_list:
             shovel.set_env(env)
+
+    def monitor_status(self, env, monitor_interval=1):
+        """监控装载区的产量、服务次数等信息
+        """
+        while True:
+            # 获取铲车信息
+            for shovel in self.shovel_list:
+                self.produced_tons += shovel.produced_tons
+                self.service_count += shovel.service_count
+            self.status[int(env.now)] = {
+                "produced_tons": self.produced_tons,
+                "service_count": self.service_count,
+            }
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
+
 
     def show_shovels(self):
         shovel_names = []

@@ -35,26 +35,66 @@ class VisualGrapher:
         self.ax.clear()
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
-        self.ax.set_title(f"time_step: {i}/{len(self.data)}")
+        mine_data = tick_data['mine_states']
+        # 1. 在图片上方展示矿山的总产量和服务次数
+        self.ax.set_title(f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']} time: {i}/{len(self.data)}")
 
-        DUMP_SITE_SCALE = 0.08  # 可以调整卸载区的缩放比例
-        LOAD_SITE_SCALE = 0.08
+        # self.ax.text(0.5, 0.95, f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']}",
+        #              ha='center', va='center', fontsize=10, color='red')
+
+        # 2. 准备动态图例的数据
+        mine_stats = [
+            ("Waiting Trucks", mine_data['waiting_truck_count']),
+            ("Loading/Unloading Trucks", mine_data['load_unload_truck_count']),
+            ("Moving Trucks", mine_data['moving_truck_count']),
+            ("Repairing Trucks", mine_data['repairing_truck_count']),
+            ("Road Jams", mine_data['road_jam_count']),
+            ("Road Repairs", mine_data['road_repair_count']),
+            ("Truck Repairs", mine_data['truck_repair']),
+            ("Irreparable Trucks", mine_data['truck_unrepairable']),
+            ("Random Events", mine_data['random_event_count'])
+        ]
+
+        # 3. 创建动态图例
+        legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label=f'{name}: {value}',
+                                      markerfacecolor='black', markersize=2) for name, value in mine_stats]
+        self.ax.legend(handles=legend_elements, loc='upper right', fontsize=3)
+
+        DUMP_SITE_SCALE = 0.1    # 可以调整卸载区的缩放比例
+        LOAD_SITE_SCALE = 0.1
         SHOVEL_SCALE = 0.10
         TRUCK_SCALE = 0.06
 
-        # 绘制装载区
+        # 3. 绘制装载区并展示总吨数
         for load_site, load_data in tick_data['load_site_states'].items():
             self.place_image(load_data['position'], self.img_mine, zoom=LOAD_SITE_SCALE)
-            self.ax.text(load_data['position'][0], load_data['position'][1] - 0.05, load_site, ha='center', fontsize=5)
-        # 绘制卸载区
+            self.ax.text(load_data['position'][0], load_data['position'][1] - 0.06, load_site,
+                         ha='center', fontsize=4)
+            stats_text = f"Tons: {load_data['tons']:.2f}," \
+                            f"count: {load_data['service_count']}"
+            self.ax.text(load_data['position'][0], load_data['position'][1] + 0.05, stats_text,
+                            ha='center', fontsize=4)
+
+        # 4. 绘制卸载区并展示总吨数
         for dump_site, dump_data in tick_data['dump_site_states'].items():
             self.place_image(dump_data['position'], self.img_dump, zoom=DUMP_SITE_SCALE)
-            self.ax.text(dump_data['position'][0], dump_data['position'][1] - 0.05, dump_site, ha='center', fontsize=5)
+            self.ax.text(dump_data['position'][0], dump_data['position'][1] - 0.05, dump_site,
+                         ha='center', fontsize=4)
+            stats_text = f"Tons: {dump_data['tons']:.2f}," \
+                         f"count: {dump_data['service_count']}"
+            self.ax.text(dump_data['position'][0], dump_data['position'][1] + 0.05, stats_text,
+                         ha='center', fontsize=4)
 
-        # 绘制铲车
+        # 5. 绘制铲车并展示其产量和服务次数
         for shovel, shovel_data in tick_data['shovel_states'].items():
             self.place_image(shovel_data['position'], self.img_shovel, zoom=SHOVEL_SCALE)
-            self.ax.text(shovel_data['position'][0], shovel_data['position'][1] - 0.03, shovel, ha='center', fontsize=3)
+            # 在图像底部展示铲车名称
+            self.ax.text(shovel_data['position'][0], shovel_data['position'][1] - 0.04, shovel,
+                         ha='center', va='bottom', fontsize=3)
+            # 在图像顶部展示产量和服务次数
+            stats_text = f"tons: {shovel_data['tons']:.2f}, count: {shovel_data['service_count']}"
+            self.ax.text(shovel_data['position'][0], shovel_data['position'][1] + 0.04, stats_text,
+                         ha='center', va='top', fontsize=4)
 
         # 绘制矿车
         for truck, truck_data in tick_data['truck_states'].items():
@@ -67,23 +107,10 @@ class VisualGrapher:
             else:
                 img_truck = self.img_truck_initing
             self.place_image(truck_data['position'], img_truck, zoom=TRUCK_SCALE)
-            self.ax.text(truck_data['position'][0], truck_data['position'][1] - 0.035, truck, ha='center', fontsize=3, color='black')
+            self.ax.text(truck_data['position'][0], truck_data['position'][1] - 0.035, truck, ha='center', fontsize=3,
+                         color='black')
 
-            # 手动创建用于图例的代理艺术家（proxy artists）
-            legend_elements = [
-                (self.img_mine, '装载区'),
-                (self.img_shovel, '铲车'),
-                (self.img_truck_initing, '矿车'),
-                (self.img_dump, '卸载区')
-            ]
 
-            # 添加图例
-            self.ax.legend(
-                [plt.Line2D([0], [0], linestyle='none', marker='_', alpha=0)] * len(legend_elements),
-                [label for _, label in legend_elements],
-                handler_map={plt.Line2D: ImageHandler(self.img_mine, LOAD_SITE_SCALE)},  # 指定图例处理器
-                loc='upper right', fontsize=5
-            )
     def place_image(self, xy, img, zoom=1):
         """
         在指定的坐标上放置图像
@@ -122,6 +149,6 @@ class ImageHandler(HandlerBase):
 
 
 if __name__ == '__main__':
-    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 17:36:35.json"
+    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 20:14:34.json"
     visualizer = VisualGrapher(path)
     visualizer.create_animation(output_path='output.gif')

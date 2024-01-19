@@ -196,13 +196,13 @@ class TickGenerator:
                     truck_position = np.array(cur_unload_site.position) + time_ratio * direction
 
                 # 车辆损坏事件，则车辆在原地不动
-                if past_events[-1].event_type == "breakdown":
+                if "breakdown" in past_events[-1].event_type:
                     status = 6
                     # 计算卡车位置
                     # 车辆损坏后位置=上一时间位置
                     truck_position = truck_position  # 已经处理过
 
-                if past_events[-1].event_type == "unrepairable":
+                if "unrepairable" in past_events[-1].event_type:
                     status = 7
                     # 计算卡车位置
                     # 车辆完全损坏后位置=充电区位置
@@ -222,10 +222,12 @@ class TickGenerator:
                 # 统计停车场的信息
                 ## 获得停车场的排队数量
                 total_queue_length = loadsite.parking_lot.queue_status["total"].get(cur_time,0)
+                ## 统计loadsite的信息
+                loadsite_status = loadsite.status.get(cur_time,{"produced_tons":0,"service_count":0})
                 load_site_tick = {
                     "name":loadsite.name,
-                    "tons":loadsite.tons,
-                    "truck_service_count":loadsite.truck_service_count,
+                    "tons":loadsite_status["produced_tons"],
+                    "service_count":loadsite_status["service_count"],
                     "time":cur_time,
                     "total_queue_length":total_queue_length,
                     "shovel_queue_length":{},
@@ -234,12 +236,15 @@ class TickGenerator:
 
                 # 统计shovel的信息
                 for shovel in loadsite.shovel_list:
+                    # 获得shovel的排队数量
                     shovel_queue_length = loadsite.parking_lot.queue_status[shovel.name].get(cur_time,0)
                     load_site_tick["shovel_queue_length"][shovel.name] = shovel_queue_length
+                    # 统计shovel的信息
+                    shovel_cur_state = shovel.status.get(cur_time,{"produced_tons":0,"service_count":0})
                     shovel_tick = {
                         "name":shovel.name,
-                        "tons":shovel.tons,
-                        "truck_service_count":shovel.truck_service_count,
+                        "tons":shovel_cur_state["produced_tons"],
+                        "service_count":shovel_cur_state["service_count"],
                         "time":cur_time,
                         "queue_length":shovel_queue_length,
                         "position":(shovel.position),
@@ -252,10 +257,12 @@ class TickGenerator:
                 # 统计停车场的信息
                 ## 获得停车场的排队数量
                 total_queue_length = dumpsite.parking_lot.queue_status["total"].get(cur_time,0)
+                # 统计dumpsite的信息
+                dump_site_status = dumpsite.status.get(cur_time,{"produced_tons":0,"service_count":0})
                 dump_site_tick = {
                     "name":dumpsite.name,
-                    "tons":dumpsite.tons,
-                    "truck_service_count":dumpsite.truck_service_count,
+                    "tons":dump_site_status["produced_tons"],
+                    "service_count":dump_site_status["service_count"],
                     "time":cur_time,
                     "total_queue_length":total_queue_length,
                     "dumper_queue_length":{},
@@ -264,12 +271,16 @@ class TickGenerator:
 
                 # 统计dumper的信息
                 for dumper in dumpsite.dumper_list:
+                    # 获得dumper的排队数量
                     dumper_queue_length = dumpsite.parking_lot.queue_status[dumper.name].get(cur_time,0)
                     dump_site_tick["dumper_queue_length"][dumper.name] = dumper_queue_length
+                    # 统计dumper的信息
+                    dumper_cur_state = dumper.status.get(cur_time,{"produced_tons":0,"service_count":0})
+
                     dumper_tick = {
                         "name":dumper.name,
-                        "tons":dumper.tons,
-                        "truck_service_count":dumper.truck_service_count,
+                        "tons":dumper_cur_state["produced_tons"],
+                        "service_count":dumper_cur_state["service_count"],
                         "time":cur_time,
                         "queue_length":dumper_queue_length,
                         "position":list(dumper.position),
@@ -278,10 +289,24 @@ class TickGenerator:
                 dump_site_states[dumpsite.name] = dump_site_tick
 
             # 统计矿山整体信息
+            mine_status = self.mine.status.get(cur_time,{"produced_tons":0,"service_count":0,"working_truck_count":0,"waiting_truck_count":0,"load_unload_truck_count":0,"moving_truck_count":0,"repairing_truck_count":0,"road_jam_count":0,"road_repair_count":0,"truck_repair":0,"truck_unrepairable":0,"random_event_count":0})
             mine_tick = {
                 "time":cur_time,
-                "total_tons":self.mine.total_tons,
-                "waiting_truck_count":self.mine.waiting_truck_count,
+                # KPIs
+                "produced_tons":mine_status["produced_tons"],
+                "service_count":mine_status["service_count"],
+                # stats
+                "working_truck_count": mine_status["working_truck_count"],
+                "waiting_truck_count": mine_status["waiting_truck_count"],
+                "load_unload_truck_count": mine_status["load_unload_truck_count"],
+                "moving_truck_count": mine_status["moving_truck_count"],
+                "repairing_truck_count": mine_status["repairing_truck_count"],
+                # event stats
+                "road_jam_count": mine_status["road_jam_count"],
+                "road_repair_count": mine_status["road_repair_count"],
+                "truck_repair": mine_status["truck_repair"],
+                "truck_unrepairable": mine_status["truck_unrepairable"],
+                "random_event_count":mine_status["random_event_count"]
             }
 
 

@@ -9,7 +9,7 @@ from scipy.stats import norm
 
 from sisymines.src.charging_site import ChargingSite
 from sisymines.src.dump_site import DumpSite, Dumper
-from sisymines.src.load_site import LoadSite
+from sisymines.src.load_site import LoadSite, Shovel
 from sisymines.src.utils.event import Event, EventPool
 
 TRUCK_DEFAULT_SPEED = 25 # km/h
@@ -53,6 +53,9 @@ class Truck:
         self.repair_std_time = 3
         # truck status
         self.status = "idle"
+        self.truck_load = 0  # in tons, the current load of the truck
+        self.service_count = 0  # the number of times the truck has been dumped
+        self.total_load_count = 0  # the total load count of the truck
 
     def set_env(self, mine:"Mine"):
         self.mine = mine
@@ -88,7 +91,7 @@ class Truck:
         repair_time = self.check_vehicle_availability()
         if repair_time:
             # 如果发生故障，记录故障事件并进行维修
-            breakdown_event = Event(self.last_breakdown_time, "breakdown", f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes',
+            breakdown_event = Event(self.last_breakdown_time, "TruckEvent:breakdown", f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes',
                       info={"name": self.name, "status": "breakdown",
                             "start_time": self.env.now, "end_time": self.env.now + repair_time})
             self.event_pool.add_event(breakdown_event)
@@ -150,7 +153,7 @@ class Truck:
         if repair_time is None:
             self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is broken down and beyond repair at {self.current_location.name} to "
                              f"{self.target_location.name}")
-            unrepairable_event = Event(self.env.now, "unrepairable", f'Time:<{self.env.now}> Truck:[{self.name}] is broken down and beyond repair'
+            unrepairable_event = Event(self.env.now, "TruckEvent:unrepairable", f'Time:<{self.env.now}> Truck:[{self.name}] is broken down and beyond repair'
                                                                      f' at {self.current_location.name} to '
                                                                         f'{self.target_location.name}',
                                         info={"name": self.name, "status": "unrepairable","time": self.env.now})
@@ -185,20 +188,28 @@ class Truck:
         assert type(self.current_location) != type(target_location), f"current_site and target_site should not be the same type of site "
         self.current_location = target_location
 
-    def load(self, shovel):
+    def load(self, shovel:Shovel):
         shovel_tons = shovel.shovel_tons
         shovel_cycle_time = shovel.shovel_cycle_time
         load_time = (self.truck_capacity/shovel_tons) * shovel_cycle_time
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Start loading at shovel {shovel.name}, load time is {load_time}')
         self.status = "loading"
         yield self.env.timeout(load_time)
+        # 随机生成一个装载量 +-10%
+        self.truck_load = self.truck_capacity*(1+np.random.uniform(-0.1, 0.1))
+        shovel.produced_tons += self.truck_load
+        shovel.service_count += 1
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish loading at shovel {shovel.name}')
 
     def unload(self, dumper:Dumper):
         unload_time:float = dumper.dump_time
         self.status = "unloading"
         yield self.env.timeout(unload_time)
-        dumper.dumper_tons += self.truck_capacity
+        dumper.dumper_tons += self.truck_load
+        self.total_load_count += self.truck_load
+        self.service_count += 1
+        self.truck_load = 0
+        dumper.service_count += 1
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish unloading at dumper {dumper.name}, dumper tons is {dumper.dumper_tons}')
         # self.event_pool.add_event(Event(self.env.now, "unload", f'Truck:[{self.name}] Finish unloading at dumper {dumper.name}',
         #                           info={"name": self.name, "status": "unloading",

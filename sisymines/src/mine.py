@@ -32,9 +32,82 @@ class Mine:
         self.road = None
         self.dispatcher = None
         self.random_event_pool = EventPool()  # 随机事件池
+        # summary
+        self.produce_tons = 0  # the produced tons of this dump site
+        self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
+        self.status = dict()  # the status of shovel
         # LOGGER配置
         self.global_logger = MineLogger(log_path=log_path, file_level=log_file_level, console_level=log_console_level)
         self.mine_logger = self.global_logger.get_logger(name)
+
+    def monitor_status(self, env, monitor_interval=1):
+        """监控卸载区的产量、服务次数等信息
+        """
+        while True:
+            # 获取每个dumper信息并统计
+            for dump_site in self.dump_sites:
+                # 获取每个dumper信息并统计
+                for dumper in dump_site.dumper_list:
+                    self.produce_tons += dumper.dumper_tons
+                    self.service_count += dumper.service_count
+            # 获取卡车整体的统计信息
+            working_truck_count = 0
+            waiting_truck_count = 0
+            load_unload_truck_count = 0
+            moving_truck_count = 0
+            repairing_truck_count = 0
+            for truck in self.trucks:
+                # 计算可工作的truck数量
+                if truck.status != "unrepairable":
+                    working_truck_count += 1
+                # 计算正在排队中的truck数量
+                if "waiting" in truck.status:
+                    waiting_truck_count += 1
+                # 计算正在装载卸载的truck数量
+                if truck.status == "loading" or truck.status == "unloading":
+                    load_unload_truck_count += 1
+                # 计算moving的truck数量
+                if truck.status == "moving":
+                    moving_truck_count += 1
+                # 计算正在维修的truck数量
+                if truck.status == "repairing":
+                    repairing_truck_count += 1
+            # 计算出现的random event的数量
+            road_jam_count = 0
+            road_repair_count = 0
+            truck_repair = 0
+            truck_unrepairable = 0
+            random_event_count = 0
+            for event_key in self.random_event_pool.event_set.keys():
+                event_type = self.random_event_pool.event_set[event_key].event_type
+                if event_type == "RoadEvent:jam":
+                    road_jam_count += 1
+                if event_type == "RoadEvent:repair":
+                    road_repair_count += 1
+                if event_type == "TruckEvent:breakdown":
+                    truck_repair += 1
+                if event_type == "TruckEvent:unrepairable":
+                    truck_unrepairable += 1
+            random_event_count = road_jam_count + road_repair_count + truck_repair + truck_unrepairable
+            self.status[int(env.now)] = {
+                # KPIs
+                "produced_tons": self.produce_tons,
+                "service_count": self.service_count,
+                # stats
+                "working_truck_count": working_truck_count,
+                "waiting_truck_count": waiting_truck_count,
+                "load_unload_truck_count": load_unload_truck_count,
+                "moving_truck_count": moving_truck_count,
+                "repairing_truck_count": repairing_truck_count,
+                # event stats
+                "road_jam_count": road_jam_count,
+                "road_repair_count": road_repair_count,
+                "truck_repair": truck_repair,
+                "truck_unrepairable": truck_unrepairable,
+                "random_event_count":random_event_count
+            }
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
 
     def add_load_site(self, load_site:LoadSite):
         load_site.set_env(self.env)
@@ -191,17 +264,32 @@ class Mine:
         self.mine_logger.info("simulation started")
         # start some monitor process for summary
         for load_site in self.load_sites:
+            # 对停车场队列的监控
             self.env.process(load_site.parking_lot.monitor_resources(env=self.env,
                                                                     resources=[shovel.res for shovel in load_site.shovel_list]))
             for shovel in load_site.shovel_list:
                 self.env.process(load_site.parking_lot.monitor_resource(env=self.env,res_name=shovel.name,
                                                                         resource=shovel.res))
+            # 对铲车产出的监控
+            for shovel in load_site.shovel_list:
+                self.env.process(shovel.monitor_status(env=self.env))
+            # 对装载区产出、装载区队列的监控
+            self.env.process(load_site.monitor_status(env=self.env))
+
         for dump_site in self.dump_sites:
+            # 对停车场队列的监控
             self.env.process(dump_site.parking_lot.monitor_resources(env=self.env,
                                                                     resources=[dumper.res for dumper in dump_site.dumper_list]))
             for dumper in dump_site.dumper_list:
                 self.env.process(dump_site.parking_lot.monitor_resource(env=self.env,res_name=dumper.name,
                                                                         resource=dumper.res))
+            # 对卸载区产出、卸载区队列的监控
+            self.env.process(dump_site.monitor_status(env=self.env))
+            # 对dumper产出的监控
+            for dumper in dump_site.dumper_list:
+                self.env.process(dumper.monitor_status(env=self.env))
+        # 对矿山整体监控
+        self.env.process(self.monitor_status(env=self.env))
         # log in the truck as process
         for truck in self.trucks:
             self.env.process(truck.run())

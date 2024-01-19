@@ -8,13 +8,25 @@ class Dumper:
         self.name = name
         self.position = None
         self.position_offset = position_offset
-        self.dumper_tons:float = 0.0
+        self.dumper_tons:float = 0.0  #  the tons of material the dumper has received
+        self.service_count = 0
         self.dump_time = dumper_cycle_time  # shovel-vehicle time took for one shovel of mine
+        self.status = dict()  # the status of shovel
 
     def set_env(self, env:simpy.Environment):
         self.env = env
         self.res = simpy.Resource(env, capacity=1)
 
+    def monitor_status(self, env, monitor_interval=1):
+        """监控卸载位的产量、服务次数等信息
+        """
+        while True:
+            self.status[int(env.now)] = {
+                "produced_tons": self.dumper_tons,
+                "service_count": self.service_count,
+            }
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
 
 class DumpSite:
     def __init__(self, name:str, position:tuple):
@@ -24,11 +36,29 @@ class DumpSite:
         self.parking_lot = None
         self.tons = 0  # 卸载点的总吨数 用于统计
         self.truck_visits = 0  # 卸载点的总车次数 用于统计
+        self.status = dict()  # the status of shovel
+        self.produce_tons = 0  # the produced tons of this dump site
+        self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
 
     def set_env(self, env:simpy.Environment):
         self.env = env
         for dumper in self.dumper_list:
             dumper.set_env(env)
+
+    def monitor_status(self, env, monitor_interval=1):
+        """监控卸载区的产量、服务次数等信息
+        """
+        while True:
+            # 获取每个dumper信息并统计
+            for dumper in self.dumper_list:
+                self.produce_tons += dumper.dumper_tons
+                self.service_count += dumper.service_count
+            self.status[int(env.now)] = {
+                "produced_tons": self.produce_tons,
+                "service_count": self.service_count,
+            }
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
 
     def add_dumper(self, dumper:Dumper):
         dumper_count = len(self.dumper_list)
