@@ -96,7 +96,8 @@ class Road:
 
     def get_distance(self, truck: "Truck", target_site, enable_event:bool=True) -> float:
         current_site = truck.current_location
-
+        assert type(current_site) != type(target_site), f"current_site and target_site should not be the same type of site " \
+                                                        f"current_site: {current_site.name}, target_site: {target_site.name},Truck name: {truck.name}"
         # 如果只是检查道路可用性，则不触发随机事件
         if not enable_event:
             in_repair = False
@@ -104,8 +105,6 @@ class Road:
             # 检查道路是否可用，并对检修状态进行模拟
             in_repair = self.check_availability(current_site, target_site)
 
-        # 正常情况下计算距离
-        current_site = truck.current_location
         # 判断当前位置的对象类型，是DumpSite 还是 LoadSite 还是 ChargingSite
         if isinstance(current_site, DumpSite):
             # 取得标号

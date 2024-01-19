@@ -1,3 +1,5 @@
+import random
+
 import numpy as np
 import simpy
 import numpy as np
@@ -42,7 +44,15 @@ class Truck:
         self.target_location = None
         self.journey_start_time = None
         self.journey_coverage = None
+        self.last_breakdown_time = 0
         self.event_pool = EventPool()
+        # the probalistics of the truck
+        self.expected_working_time_without_breakdown = 60*6  # in minutes
+        self.expected_working_time_until_unrepairable = 60*24*7  # in minutes
+        self.repair_avg_time = 10
+        self.repair_std_time = 3
+        # truck status
+        self.status = "idle"
 
     def set_env(self, mine:"Mine"):
         self.mine = mine
@@ -71,12 +81,31 @@ class Truck:
             duration = (distance / self.truck_speed)*60
         self.truck_speed = manual_speed if manual_speed is not None else self.truck_speed
 
+        """
+        1.车辆维修随机事件的模拟        
+        """
+        # 检查车辆是否发生故障并获得维修时间
+        repair_time = self.check_vehicle_availability()
+        if repair_time:
+            # 如果发生故障，记录故障事件并进行维修
+            breakdown_event = Event(self.last_breakdown_time, "breakdown", f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes',
+                      info={"name": self.name, "status": "breakdown",
+                            "start_time": self.env.now, "end_time": self.env.now + repair_time})
+            self.event_pool.add_event(breakdown_event)
+            self.mine.random_event_pool.add_event(breakdown_event)
+            self.logger.info(f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes at {self.last_breakdown_time}')
+            # 进行维修（暂停运行）
+            self.status = "repairing"
+            yield self.env.timeout(repair_time)
+        """
+        2.车辆运行过程中的堵车随机事件模拟
+        """
         # 分析当前道路中的车辆情况，并随机生成一个延迟时间用来模拟交通堵塞
         # 获取其他车辆的引用
         other_trucks = self.mine.trucks
         # 筛选出出发地和目的地跟本车相同的车辆
         other_trucks_on_road = [truck for truck in other_trucks if truck.current_location == self.current_location and
-                                                            truck.target_location == self.target_location]
+                                truck.target_location == self.target_location]
         # 为每个同路的车辆根据当前时间计算route_coverage数值
         for truck in other_trucks_on_road:
             truck.journey_coverage = truck.get_route_coverage(distance)
@@ -106,14 +135,32 @@ class Truck:
             # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
             is_jam = True if len(truck_positions) > 3 else False
             self.mine.random_event_pool.add_event(Event(self.env.now + time_to_jam, "RoadEvent:jam",
-                                                        f'Truck:[{self.name}] is jammed at road from {self.current_location.name} '
+                                                        f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] is jammed at road from {self.current_location.name} '
                                                         f'to {self.target_location.name} for {jam_time:.2f} minutes',
                                                         info={"name": self.name, "status": "jam", "speed": 0,
-                                                                "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
-            self.logger.info(f"Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
+                                                              "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
+            self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
         else:
             is_jam = False
 
+
+        """
+        3.车辆完全损坏的模拟(当车辆完全损坏就会被移除,车辆到指定时间后不会再发生移动，而是停留在原地
+        """
+        if repair_time is None:
+            self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is broken down and beyond repair at {self.current_location.name} to "
+                             f"{self.target_location.name}")
+            unrepairable_event = Event(self.env.now, "unrepairable", f'Time:<{self.env.now}> Truck:[{self.name}] is broken down and beyond repair'
+                                                                     f' at {self.current_location.name} to '
+                                                                        f'{self.target_location.name}',
+                                        info={"name": self.name, "status": "unrepairable","time": self.env.now})
+            self.event_pool.add_event(unrepairable_event)
+            self.mine.random_event_pool.add_event(unrepairable_event)
+            self.status = "unrepairable"
+            return
+        """
+        4.车辆移动前往目的地的模拟
+        """
         # 判断目标地点的类型
         if isinstance(target_location, LoadSite) or isinstance(target_location, ChargingSite):
             # 如果是装载区
@@ -128,15 +175,14 @@ class Truck:
                                               "start_location": self.current_location.name,
                                               "target_location": target_location.name,
                                               "distance": distance, "duration": None}))
-        # TODO: 实际上move的end_time是不确定的，因为move的过程中可能会有其他的event发生，比如堵车、滑坡等
-        #       这里暂时先不考虑这种情况，后续可以考虑加入这种情况
-        #       可以end_time先留空 然后对当前时间的主干取hash值然后后期遇到突发时间 那么就拿过来修改
+        self.status = "moving"
         yield self.env.timeout(duration+is_jam*jam_time)
         # 补全数据
         last_move_event = self.event_pool.get_last_event(type=event_name, strict=True)
         last_move_event.info["end_time"] = self.env.now
         last_move_event.info["duration"] = self.env.now - last_move_event.info["start_time"]
         # after arrival set current location
+        assert type(self.current_location) != type(target_location), f"current_site and target_site should not be the same type of site "
         self.current_location = target_location
 
     def load(self, shovel):
@@ -144,11 +190,13 @@ class Truck:
         shovel_cycle_time = shovel.shovel_cycle_time
         load_time = (self.truck_capacity/shovel_tons) * shovel_cycle_time
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Start loading at shovel {shovel.name}, load time is {load_time}')
+        self.status = "loading"
         yield self.env.timeout(load_time)
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish loading at shovel {shovel.name}')
 
     def unload(self, dumper:Dumper):
         unload_time:float = dumper.dump_time
+        self.status = "unloading"
         yield self.env.timeout(unload_time)
         dumper.dumper_tons += self.truck_capacity
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish unloading at dumper {dumper.name}, dumper tons is {dumper.dumper_tons}')
@@ -174,18 +222,23 @@ class Truck:
 
         # 轮班开始 车辆从充电区域前往装载区
         self.current_location = self.mine.charging_site
+        self.status = "waiting for order"
         dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Activated at {self.env.now}, Target load site is ORDER({dest_load_index}):{load_site.name}, move distance is {move_distance}')
         self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Activated at {self.env.now}, Target load site is ORDER({dest_load_index}):{load_site.name}, move distance is {move_distance}',
-                                    info={"name": self.name, "status": "ORDER",
-                                            "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
-                                            "start_location": self.current_location.name,
-                                            "target_location": load_site.name,
-                                            "distance": move_distance, "order_index": dest_load_index}))
+                                        info={"name": self.name, "status": "ORDER",
+                                              "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
+                                              "start_location": self.current_location.name,
+                                              "target_location": load_site.name,
+                                              "distance": move_distance, "order_index": dest_load_index}))
         yield self.env.process(self.move(target_location=load_site, distance=move_distance))  # 移动时间
+        # 检查车辆状态，如果是完全损坏则退出
+        if self.status == "unrepairable":
+            self.logger.info(f"Truck {self.name} is beyond repair and will no longer participate in operations.")
+            return
 
         while True:
             # 到达装载区开始请求资源并装载
@@ -196,9 +249,10 @@ class Truck:
             with shovel.res.request() as req:
                 # 申请到资源之前的操作
                 self.event_pool.add_event(Event(self.env.now, "wait shovel", f'Truck:[{self.name}] Wait shovel {shovel.name}',
-                                            info={"name": self.name, "status": "waiting for shovel",
-                                                    "start_time": self.env.now, "end_time": None,
-                                                    "shovel": shovel.name, "wait_duration": None}))
+                                                info={"name": self.name, "status": "waiting for shovel",
+                                                      "start_time": self.env.now, "end_time": None,
+                                                      "shovel": shovel.name, "wait_duration": None}))
+                self.status = "waiting for shovel"
                 # ...
                 yield req  # 申请铲车资源
                 # 申请到铲车资源
@@ -208,9 +262,9 @@ class Truck:
                 last_wait_event.info["wait_duration"] = self.env.now - last_wait_event.info["start_time"]
                 # 添加load的event
                 self.event_pool.add_event(Event(self.env.now, "get shovel", f'Truck:[{self.name}] Get shovel {shovel.name}',
-                                          info={"name": self.name, "status": "loading on shovel",
-                                                "start_time": self.env.now, "end_time": None,
-                                                "shovel": shovel.name, "load_duration": None}))
+                                                info={"name": self.name, "status": "loading on shovel",
+                                                      "start_time": self.env.now, "end_time": None,
+                                                      "shovel": shovel.name, "load_duration": None}))
                 yield self.env.process(self.load(shovel))  # 装载时间 同shovel和truck自身有关系
                 # 装载完毕 对之前的Event进行数据补全
                 last_load_event = self.event_pool.get_last_event(type="get shovel", strict=True)
@@ -218,19 +272,25 @@ class Truck:
                 last_load_event.info["load_duration"] = self.env.now - last_load_event.info["start_time"]
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
+            self.status = "waiting for order"
             dest_unload_index: int = self.dispatcher.give_haul_order(truck=self, mine=self.mine)
             dest_unload_site: DumpSite = self.mine.dump_sites[dest_unload_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_unload_site)
+
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
-                                        info={"name": self.name, "status": "ORDER",
-                                                "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
-                                                "start_location": self.current_location.name,
-                                                "target_location": dest_unload_site.name, "speed": self.truck_speed,
-                                                "distance": move_distance, "order_index": dest_unload_index}))
+                                            info={"name": self.name, "status": "ORDER",
+                                                  "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
+                                                  "start_location": self.current_location.name,
+                                                  "target_location": dest_unload_site.name, "speed": self.truck_speed,
+                                                  "distance": move_distance, "order_index": dest_unload_index}))
 
             yield self.env.process(self.move(target_location=dest_unload_site, distance=move_distance))  # 移动时间
 
+            # 检查车辆状态，如果是完全损坏则退出
+            if self.status == "unrepairable":
+                self.logger.info(f"Truck {self.name} is beyond repair and will no longer participate in operations.")
+                return
             # 到达卸载区并开始请求资源并卸载
             self.logger.debug(f'Time:<{self.env.now}> Truck:[{self.name}] Arrived at {dest_unload_site.name} at {self.env.now}')
             dumper:Dumper = dest_unload_site.get_available_dumper()
@@ -238,9 +298,10 @@ class Truck:
                 # 申请到资源之前的操作
                 # ...
                 self.event_pool.add_event(Event(self.env.now, "wait dumper", f'Truck:[{self.name}] Wait dumper {dumper.name}',
-                                            info={"name": self.name, "status": "waiting for dumper",
-                                                    "start_time": self.env.now, "end_time": None,
-                                                    "dumper": dumper.name, "wait_duration": None}))
+                                                info={"name": self.name, "status": "waiting for dumper",
+                                                      "start_time": self.env.now, "end_time": None,
+                                                      "dumper": dumper.name, "wait_duration": None}))
+                self.status = "waiting for dumper"
                 yield req  # 申请卸载位资源
                 # 申请到卸载位资源
                 # 先获取wait的event进行数据补全
@@ -248,9 +309,9 @@ class Truck:
                 last_wait_event.info["end_time"] = self.env.now
                 last_wait_event.info["wait_duration"] = self.env.now - last_wait_event.info["start_time"]
                 self.event_pool.add_event(Event(self.env.now, "get dumper", f'Truck:[{self.name}] Get dumper {dumper.name}',
-                                            info={"name": self.name, "status": "unloading on dumper",
-                                                    "start_time": self.env.now, "end_time": None,
-                                                    "dumper": dumper.name, "unload_duration": None}))
+                                                info={"name": self.name, "status": "unloading on dumper",
+                                                      "start_time": self.env.now, "end_time": None,
+                                                      "dumper": dumper.name, "unload_duration": None}))
                 yield self.env.process(self.unload(dumper))
                 # 卸载完毕 对之前的Event进行数据补全
                 last_unload_event = self.event_pool.get_last_event(type="get dumper", strict=True)
@@ -258,17 +319,22 @@ class Truck:
                 last_unload_event.info["unload_duration"] = self.env.now - last_unload_event.info["start_time"]
 
             # 卸载完毕，请求新的装载区，并开始移动到装载区
+            self.status = "waiting for order"
             dest_load_index: int = self.dispatcher.give_back_order(truck=self, mine=self.mine)
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
-                                        info={"name": self.name, "status": "ORDER",
-                                                "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
-                                                "start_location": self.current_location.name,
-                                                "target_location": dest_load_site.name, "speed": self.truck_speed,
-                                                "distance": move_distance, "order_index": dest_load_index}))
+                                            info={"name": self.name, "status": "ORDER",
+                                                  "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
+                                                  "start_location": self.current_location.name,
+                                                  "target_location": dest_load_site.name, "speed": self.truck_speed,
+                                                  "distance": move_distance, "order_index": dest_load_index}))
             yield self.env.process(self.move(target_location=dest_load_site, distance=move_distance))  # 移动时间
+            # 检查车辆状态，如果是完全损坏则退出
+            if self.status == "unrepairable":
+                self.logger.info(f"Truck {self.name} is beyond repair and will no longer participate in operations.")
+                return
 
     def charge(self, duration):
         """
@@ -346,3 +412,28 @@ class Truck:
         coverage = (current_time - self.journey_start_time)/total_travel_time
         return coverage
 
+    def check_vehicle_availability(self):
+        """
+        使用指数分布对卡车的可用性进行建模并采样，可能出现的状况包括故障需要维修。
+        :return: 维修持续时间（如果发生故障)
+        """
+        # 使用指数分布计算故障发生的时间（载具正常工作时长）
+        time_to_breakdown = np.random.exponential(self.expected_working_time_without_breakdown)
+        # 判断载具是否发生故障（当前时间超过故障时间）
+        if self.env.now >= self.last_breakdown_time + time_to_breakdown:
+            # 发生故障，使用正态分布N(mu=10, sigma=3)采样获得维修时间
+            repair_time = np.random.normal(self.repair_avg_time, self.repair_std_time)
+            repair_time = max(repair_time, 0)  # 确保维修时间为正值
+            # 更新最后一次故障时间
+            self.last_breakdown_time = self.last_breakdown_time + time_to_breakdown
+            """
+            TODO: 维修的判断依据有问题 很有可能多次采样叠加后self.last_breakdown_time依然是小于当前时间的
+            这里明天再修复 今天弄不了 脑子不好用了
+            """
+            return repair_time  # 发生故障则返回维修时间
+        # 如果车辆发生无法维修的损坏，返回None；使用指数分布计算故障发生的时间
+        # self.expected_working_time_until_unrepairable
+
+        if self.env.now >= random.expovariate(1.0 / self.expected_working_time_until_unrepairable):
+            return None
+        return 0  # 未发生故障则返回0维修时间

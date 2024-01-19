@@ -21,6 +21,7 @@ LOADING = 2
 HAULING = 3
 WAIT_FOR_DUMP = 4
 DUMPING = 5
+REPAIRING = 6
 
 class TickGenerator:
     """
@@ -67,10 +68,11 @@ class TickGenerator:
                 future_events = event_pool.get_event_by_time(cur_time+0.1, mode="future")
                 status = None
                 position = None
+                truck_position = np.array([0.0, 0.0])
                 ## 车辆在充电场
                 if len(past_events)==0:
                     status = -1  # 没有事件、仅有一个调度事件==还在空载状态，位置处于充电站
-                    truck_position = np.array(charging_site.position) + np.array([0, 0])
+                    truck_position = np.array(charging_site.position) + np.array([0.0, 0.0])
                 ## 车辆在从充电场到装载点的路上
                 if len(past_events)==2 and future_events[0].event_type=="wait shovel":
                     """unhaul example:
@@ -192,6 +194,19 @@ class TickGenerator:
                     direction = np.array(target_load_site.position) - np.array(cur_unload_site.position)
                     truck_position = np.array(cur_unload_site.position) + time_ratio * direction
 
+                # 车辆损坏事件，则车辆在原地不动
+                if past_events[-1].event_type == "breakdown":
+                    status = 6
+                    # 计算卡车位置
+                    # 车辆损坏后位置=上一时间位置
+                    truck_position = truck_position  # 已经处理过
+
+                if past_events[-1].event_type == "unrepairable":
+                    status = 7
+                    # 计算卡车位置
+                    # 车辆完全损坏后位置=充电区位置
+                    # 获取chargingSite位置
+                    truck_position = np.array(self.mine.charging_site.position).astype(float)  # 已经处理过
 
                 truck_state = {
                     "name":truck.name,
@@ -272,4 +287,9 @@ class TickGenerator:
         """
         file_path = os.path.join(self.result_path, file_name)
         with open(file_path, "w") as f:
-            json.dump(self.ticks,f)
+            try:
+                json.dump(self.ticks,f)
+                print("file_name:{} write success".format(file_name))
+            except Exception as e:
+                print(e)
+                print("file_name:{} write failed".format(file_name))
