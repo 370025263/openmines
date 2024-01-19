@@ -106,6 +106,9 @@ class Mine:
                 "truck_unrepairable": truck_unrepairable,
                 "random_event_count":random_event_count
             }
+            # reset
+            self.produce_tons = 0
+            self.service_count = 0
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 

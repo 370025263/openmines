@@ -7,6 +7,8 @@ import numpy as np
 import matplotlib.animation as animation
 import os
 
+from tqdm import tqdm
+
 plt.rcParams['font.family'] = 'PingFang HK'
 plt.rcParams["axes.unicode_minus"] = False
 
@@ -26,11 +28,18 @@ class VisualGrapher:
         self.img_truck_initing = mpimg.imread(os.path.join('materials', 'truck_initing.png'))
         self.img_dump = mpimg.imread(os.path.join('materials', 'dump.png'))
 
-    def create_animation(self, output_path='output.gif'):
-        ani = animation.FuncAnimation(self.fig, self.plot_tick, frames=len(self.data), repeat=False)
-        ani.save(output_path, writer='pillow', fps=10, dpi=300)
+    def update_progress(self, pbar):
+        pbar.update()
 
-    def plot_tick(self, i):
+    def create_animation(self, output_path='output.gif'):
+        frames = len(self.data)
+        with tqdm(total=frames, desc="Generating Animation") as pbar:
+            ani = animation.FuncAnimation(self.fig, lambda i: self.plot_tick(i, pbar), frames=frames, repeat=False,
+                                          blit=False)
+            ani.save(output_path, writer='pillow', fps=10, dpi=300)
+
+    def plot_tick(self, i, pbar):
+        self.update_progress(pbar)
         tick_data = self.data[str(i)]
         self.ax.clear()
         self.ax.set_xlim(0, 1)
@@ -149,6 +158,6 @@ class ImageHandler(HandlerBase):
 
 
 if __name__ == '__main__':
-    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 22:10:28.json"
+    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 22:33:49.json"
     visualizer = VisualGrapher(path)
     visualizer.create_animation(output_path='output.gif')

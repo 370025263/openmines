@@ -57,6 +57,9 @@ class DumpSite:
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
             }
+            # reset
+            self.produce_tons = 0
+            self.service_count = 0
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 

@@ -91,6 +91,9 @@ class LoadSite:
                 "produced_tons": self.produced_tons,
                 "service_count": self.service_count,
             }
+            # reset
+            self.produced_tons = 0
+            self.service_count = 0
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
