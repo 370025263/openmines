@@ -255,7 +255,7 @@ class Mine:
         total_wait_time = sum([truck.get_wait_time() for truck in self.trucks])
         print(f'TotalWaitTime: {total_wait_time}')
 
-    def start(self, total_time:float=60*8):
+    def start(self, total_time:float=60*8)->dict:
         assert self.road is not None, "road can not be None"
         assert self.dispatcher is not None, "dispatcher can not be None"
         assert self.charging_site is not None, "charging_site can not be None"
@@ -299,7 +299,8 @@ class Mine:
         self.env.run(until=total_time)
         self.mine_logger.info("simulation finished")
         self.summary()
-        self.dump_frames(total_time=total_time)
+        ticks = self.dump_frames(total_time=total_time)
+        return ticks
 
     def dump_frames(self,total_time):
         """使用TickGenerator记录仿真过程中的数据
@@ -313,4 +314,5 @@ class Mine:
         self.tick_generator.run()
         # 获得年月日时分秒的字符串表示
         time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        self.tick_generator.write_to_file(file_name=f'MINE:{self.name}_ALGO:{self.dispatcher.name}_TIME:{time_str}.json')
+        ticks = self.tick_generator.write_to_file(file_name=f'MINE:{self.name}_ALGO:{self.dispatcher.name}_TIME:{time_str}.json')
+        return ticks

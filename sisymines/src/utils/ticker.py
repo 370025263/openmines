@@ -341,3 +341,19 @@ class TickGenerator:
             except Exception as e:
                 print(e)
                 print("file_name:{} write failed".format(file_name))
+        return self.ticks
+
+    def read_from_file(self, file_name):
+        """
+        从文件中读取ticks
+        :param file_path:
+        :return:
+        """
+        file_path = os.path.join(self.result_path, file_name)
+        with open(file_path, "r") as f:
+            try:
+                self.ticks = json.load(f)
+                print("file_name:{} read success".format(file_name))
+            except Exception as e:
+                print(e)
+                print("file_name:{} read failed".format(file_name))

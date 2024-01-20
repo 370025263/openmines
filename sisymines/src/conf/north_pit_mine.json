@@ -3,7 +3,7 @@
     "name": "NorthPitMine"
   },
   "dispatcher": {
-    "type": "NaiveDispatcher"
+    "type": ["NaiveDispatcher","RandomDispatcher"]
   },
   "charging_site": {
     "name": "NorthPitMineChargingSite",

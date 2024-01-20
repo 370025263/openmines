@@ -3,7 +3,7 @@
     "name": "NorthOpenPitMine"
   },
   "dispatcher": {
-    "type": "NaiveDispatcher"
+    "type": ["NaiveDispatcher","RandomDispatcher"]
   },
   "charging_site": {
     "name": "North Open-pit Mine Charging Station",

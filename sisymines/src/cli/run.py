@@ -7,7 +7,10 @@ import importlib
 from datetime import time
 
 import numpy as np
+import pandas as pd
+from matplotlib import pyplot as plt
 
+from sisymines.src.utils.visualization.charter import Charter
 from sisymines.src.utils.visualization.graphher import VisualGrapher
 
 # add the sisymines package to the path
@@ -27,32 +30,11 @@ def load_config(filename):
     with open(filename, 'r') as file:
         return json.load(file)
 
-def run_simulation(config_file=None):
+def run_dispatch_sim(dispatcher: BaseDispatcher, config_file):
     config = load_config(config_file)
-
     # 初始化矿山
     mine = Mine(config['mine']['name'])
-
-    # 初始化调度器
-    # 定义dispatch_algorithms所在的路径
-    dispatchers_package = 'sisymines.src.dispatch_algorithms'
-    # 导入dispatch_algorithms包
-    dispatchers_module = importlib.import_module(dispatchers_package)
-    # 遍历dispatch_algorithms包中的所有模块
-    for _, module_name, _ in pkgutil.iter_modules(dispatchers_module.__path__, dispatchers_package + '.'):
-        # 动态导入模块
-        module = importlib.import_module(module_name)
-        # 假设配置中指定的调度器类型
-        dispatcher_type = config['dispatcher']['type']
-        # 检查模块中是否有该类
-        if hasattr(module, dispatcher_type):
-            dispatcher_class = getattr(module, dispatcher_type)
-            dispatcher = dispatcher_class()
-            mine.add_dispatcher(dispatcher)
-            break
-    # Raise Error if no dispatcher is found
-    assert mine.dispatcher is not None, f"Dispatcher {dispatcher_type} not found"
-
+    mine.add_dispatcher(dispatcher)
     # 初始化充电站和卡车
     charging_site = ChargingSite(config['charging_site']['name'], position=config['charging_site']['position'])
     for truck_config in config['charging_site']['trucks']:
@@ -91,7 +73,7 @@ def run_simulation(config_file=None):
                 )
                 dump_site.add_dumper(dumper)
         dump_site.add_parkinglot(position_offset=dump_site_config['parkinglot']['position_offset'],
-                                    name=dump_site_config['parkinglot']['name'])
+                                 name=dump_site_config['parkinglot']['name'])
         mine.add_dump_site(dump_site)
 
     # 初始化道路
@@ -105,9 +87,62 @@ def run_simulation(config_file=None):
     mine.add_road(road)
     mine.add_charging_site(charging_site)
 
-    # 开始运行实验
-    mine.start(total_time=config['sim_time'])
+    # 开始实验
+    print(f"Running simulation for {dispatcher.__class__.__name__}")
+    ticks = mine.start(total_time=config['sim_time'])
+    return ticks
 
+
+def run_simulation(config_file=None):
+    config = load_config(config_file)
+    charter = Charter(config_file)
+    states_dict = dict()
+    # 初始化调度器
+    # 定义dispatch_algorithms所在的路径
+    dispatchers_package = 'sisymines.src.dispatch_algorithms'
+    # 导入dispatch_algorithms包
+    dispatchers_module = importlib.import_module(dispatchers_package)
+    # 遍历dispatch_algorithms包中的所有模块
+    dispatchers_list = []
+    for _, module_name, _ in pkgutil.iter_modules(dispatchers_module.__path__, dispatchers_package + '.'):
+        # 动态导入模块
+        module = importlib.import_module(module_name)
+        # 假设配置中指定的调度器类型
+        dispatcher_types:list = config['dispatcher']['type']
+        for dispatcher_type in dispatcher_types:
+            # 检查模块中是否有该类
+            if hasattr(module, dispatcher_type):
+                dispatcher_class = getattr(module, dispatcher_type)
+                dispatcher = dispatcher_class()
+                if dispatcher.name not in [dispatcher.name for dispatcher in dispatchers_list]:
+                    dispatchers_list.append(dispatcher)
+
+    # 开始运行对比实验
+    for dispatcher in dispatchers_list:
+        dispatcher_name = dispatcher.name
+        ticks = run_dispatch_sim(dispatcher, config_file)
+        # 读取运行结果并保存，等待绘图
+        ## 读取production
+        times = []
+        produced_tons = []
+        service_count = []
+        waiting_truck_count = []
+        # ticks 是一个字典 key为时间，value为一个字典，包含了当前时间的所有信息
+        for tick in ticks.values():
+            tick = tick['mine_states']
+            times.append(tick['time'])
+            produced_tons.append(tick['produced_tons'])
+            service_count.append(tick['service_count'])
+            waiting_truck_count.append(tick['waiting_truck_count'])
+        states_dict[dispatcher_name] = {
+            'times': times,
+            'produced_tons': produced_tons,
+            'service_count': service_count,
+            'waiting_truck_count': waiting_truck_count
+        }
+    # 绘制图表
+    charter.draw(states_dict)
+    charter.save()
 
 def run_visualization(tick_file=None):
     visual_grapher = VisualGrapher(tick_file)
