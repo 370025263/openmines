@@ -20,13 +20,14 @@ class VisualGrapher:
         self.truck_colors = {}
         self.fig, self.ax = plt.subplots()
 
-        # 路径可能需要根据您的实际文件位置进行调整
-        self.img_mine = mpimg.imread(os.path.join('materials', '矿山.png'))
-        self.img_shovel = mpimg.imread(os.path.join('materials', '挖机.png'))
-        self.img_truck_hauling = mpimg.imread(os.path.join('materials', 'truck_hauling.png'))
-        self.img_truck_unhauling = mpimg.imread(os.path.join('materials', 'truck_unhauling.png'))
-        self.img_truck_initing = mpimg.imread(os.path.join('materials', 'truck_initing.png'))
-        self.img_dump = mpimg.imread(os.path.join('materials', 'dump.png'))
+        # Use os.path.join to construct image paths relative to the script's location
+        script_directory = os.path.dirname(__file__)
+        self.img_mine = mpimg.imread(os.path.join(script_directory, 'materials', '矿山.png'))
+        self.img_shovel = mpimg.imread(os.path.join(script_directory, 'materials', '挖机.png'))
+        self.img_truck_hauling = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_hauling.png'))
+        self.img_truck_unhauling = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_unhauling.png'))
+        self.img_truck_initing = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_initing.png'))
+        self.img_dump = mpimg.imread(os.path.join(script_directory, 'materials', 'dump.png'))
 
     def update_progress(self, pbar):
         pbar.update()
