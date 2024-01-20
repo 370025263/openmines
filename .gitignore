@@ -8,6 +8,8 @@ __pycache__/
 
 # result
 sisymines/src/results/*
+sisymines/src/cli/results
+sisymines/src/cli/results/*
 # test
 sisymines/src/test/*
 
