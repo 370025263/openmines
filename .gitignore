@@ -10,8 +10,11 @@ __pycache__/
 sisymines/src/results/*
 sisymines/src/cli/results
 sisymines/src/cli/results/*
+sisymines/src/results
 # test
 sisymines/src/test/*
+sisymines/test/junk
+sisymines/test/junk/*
 
 # C extensions
 *.so
