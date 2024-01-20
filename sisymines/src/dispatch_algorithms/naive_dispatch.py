@@ -11,7 +11,6 @@ class NaiveDispatcher(BaseDispatcher):
 
     def give_init_order(self, truck: "Truck", mine: "Mine") -> int:
         # 从第一个load site开始
-        time.sleep(1)
         return 0
 
     def give_haul_order(self, truck: "Truck", mine: "Mine") -> int:

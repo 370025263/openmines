@@ -56,6 +56,8 @@ class Truck:
         self.truck_load = 0  # in tons, the current load of the truck
         self.service_count = 0  # the number of times the truck has been dumped
         self.total_load_count = 0  # the total load count of the truck
+        self.truck_cycle_time = 0
+        self.first_order_time = 0
 
     def set_env(self, mine:"Mine"):
         self.mine = mine
@@ -208,6 +210,7 @@ class Truck:
         dumper.dumper_tons += self.truck_load
         self.total_load_count += self.truck_load
         self.service_count += 1
+        self.truck_cycle_time = (self.env.now - self.last_breakdown_time) / self.service_count
         self.truck_load = 0
         dumper.service_count += 1
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish unloading at dumper {dumper.name}, dumper tons is {dumper.dumper_tons}')
@@ -252,6 +255,7 @@ class Truck:
         self.current_location = self.mine.charging_site
         self.status = "waiting for order"
         dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
+        self.first_order_time = self.env.now
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
@@ -376,25 +380,6 @@ class Truck:
         """
         self.logger.info(f'{self.name} Start charging at {self.env.now}')
         yield self.env.timeout(duration)
-
-    def get_cycle_time(self):
-        """
-        获取一次循环的时间
-        目前是计算unload事件的个数和时间，然后计算平均值
-        :return:
-        """
-        unload_events = self.event_pool.get_even_by_type("unload")
-        unload_event_count = len(unload_events)
-        unload_event_time = [event.time_stamp for event in unload_events]
-
-        if unload_event_count == 0:
-            return 0
-
-        if unload_event_count == 1:
-            return unload_event_time[0]
-
-        cycle_time = (max(unload_event_time) - min(unload_event_time))/abs(unload_event_count - 1)
-        return cycle_time
 
     def get_wait_time(self):
         """

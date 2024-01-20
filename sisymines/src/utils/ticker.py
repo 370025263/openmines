@@ -331,23 +331,29 @@ class TickGenerator:
         # 添加一些分析性非实时性的统计数据
         # 统计卸载区产量
         print(f"{self.mine.name} summary: {self.ticks[cur_time]['mine_states']['produced_tons']} tons")
-        # # 统计TruckCycleTime
-        # for truck in self.mine.trucks:
-        #     truck_cycle_time = truck.get_cycle_time()
         # 统计MatchingFactor
+        # paper:Match factor for heterogeneous truck and loader fleets
         shovels = [shovel for load_site in self.mine.load_sites for shovel in load_site.shovel_list]
+        trucks = self.mine.trucks
+        truck_cycle_time_avg = np.mean([truck.truck_cycle_time for truck in trucks])
+
         num_trucks = len(self.mine.trucks)
-        load_times = [shovel.shovel_cycle_time for shovel in shovels]
-        unique_loading_times = set([shovel.shovel_cycle_time for shovel in shovels])
-        lcm_load_time = reduce(math.lcm, unique_loading_times)
-        LSR = sum([lcm_load_time / shovel.shovel_cycle_time for shovel in shovels]) / lcm_load_time
-        TAR = num_trucks ** 2 / sum(load_times)
-        match_factor = TAR / LSR
+        num_shovels = len(shovels)
+        loading_time:np.array = np.zeros((num_trucks,num_shovels))
+        for i,truck in enumerate(trucks):
+            for j,shovel in enumerate(shovels):
+                loading_time[i,j] = (truck.truck_capacity/shovel.shovel_tons)*shovel.shovel_cycle_time  # in mins
+        # 按行按列去重复
+        loading_time = np.unique(loading_time, axis=0)
+        unique_loading_time = np.unique(loading_time, axis=1).astype(int)
+        # 对每一行求lcm
+        lcm_load_time = np.lcm.reduce(unique_loading_time, axis=1)
+        upside_down_sum = 0
+        for i in range(unique_loading_time.shape[0]):
+            for j in range(unique_loading_time.shape[1]):
+                upside_down_sum += lcm_load_time[i]/unique_loading_time[i,j]
+        match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg)
         print(f'MatchingFactor: {match_factor}')
-        # # 统计TruckWaitTime
-        # for truck in self.mine.trucks:
-        #     truck_wait_time = truck.get_wait_time()
-        # 统计TotalWaitTime
         total_wait_time = sum([truck.get_wait_time() for truck in self.mine.trucks])
         print(f'TotalWaitTime: {total_wait_time}')
         # 统计调度算法代码的执行性能
