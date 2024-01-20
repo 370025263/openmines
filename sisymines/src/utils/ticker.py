@@ -1,12 +1,13 @@
 import json
 import logging
+import math
 import time, os
 from pathlib import Path
 import numpy as np
 
 from sisymines.src.utils.event import EventPool
 from sisymines.src.utils.logger import MineLogger
-
+from functools import reduce
 
 # 项目主路径
 PROJECT_ROOT_PATH = Path(__file__).parent.parent.parent
@@ -326,6 +327,42 @@ class TickGenerator:
                 "mine_states":mine_tick
             }
             self.ticks[cur_time] = tick_packet
+
+        # 添加一些分析性非实时性的统计数据
+        # 统计卸载区产量
+        print(f"{self.mine.name} summary: {self.ticks[cur_time]['mine_states']['produced_tons']} tons")
+        # # 统计TruckCycleTime
+        # for truck in self.mine.trucks:
+        #     truck_cycle_time = truck.get_cycle_time()
+        # 统计MatchingFactor
+        shovels = [shovel for load_site in self.mine.load_sites for shovel in load_site.shovel_list]
+        num_trucks = len(self.mine.trucks)
+        load_times = [shovel.shovel_cycle_time for shovel in shovels]
+        unique_loading_times = set([shovel.shovel_cycle_time for shovel in shovels])
+        lcm_load_time = reduce(math.lcm, unique_loading_times)
+        LSR = sum([lcm_load_time / shovel.shovel_cycle_time for shovel in shovels]) / lcm_load_time
+        TAR = num_trucks ** 2 / sum(load_times)
+        match_factor = TAR / LSR
+        print(f'MatchingFactor: {match_factor}')
+        # # 统计TruckWaitTime
+        # for truck in self.mine.trucks:
+        #     truck_wait_time = truck.get_wait_time()
+        # 统计TotalWaitTime
+        total_wait_time = sum([truck.get_wait_time() for truck in self.mine.trucks])
+        print(f'TotalWaitTime: {total_wait_time}')
+        # 统计调度算法代码的执行性能
+        total_order_count = self.mine.dispatcher.total_order_count
+        total_order_time = self.mine.dispatcher.total_order_time
+        avg_time_per_order = total_order_time / total_order_count if total_order_count > 0 else 0
+
+        self.ticks["summary"] = {
+            "produced_tons":self.ticks[cur_time]['mine_states']['produced_tons'],
+            "MatchingFactor":match_factor,
+            "TotalWaitTime":total_wait_time,
+            "avg_time_per_order":avg_time_per_order,
+            "total_order_count":total_order_count
+        }
+
 
     def write_to_file(self, file_name):
         """

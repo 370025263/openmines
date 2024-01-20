@@ -224,36 +224,7 @@ class Mine:
 
         :return:
         """
-        # 统计卸载区产量
-        out_tons = []
-        for dump_site in self.dump_sites:
-            out_tons.append(dump_site.get_produce_tons())
-        total_out_tons = sum(out_tons)
-        print(f'{self.name} summary: {out_tons} tons')
 
-        # 统计TruckCycleTime
-        for truck in self.trucks:
-            truck_cycle_time = truck.get_cycle_time()
-            print(f'{truck.name} cycle time: {truck_cycle_time}')
-
-        # 统计MatchingFactor
-        shovels = [shovel for load_site in self.load_sites for shovel in load_site.shovel_list]
-        num_trucks = len(self.trucks)
-        load_times = [shovel.shovel_cycle_time for shovel in shovels]
-        unique_loading_times = set([shovel.shovel_cycle_time for shovel in shovels])
-        lcm_load_time = reduce(math.lcm, unique_loading_times)
-        LSR = sum([lcm_load_time / shovel.shovel_cycle_time for shovel in shovels]) / lcm_load_time
-        TAR = num_trucks**2 / sum(load_times)
-        match_factor = TAR / LSR
-        print(f'MatchingFactor: {match_factor}')
-
-        # 统计TruckWaitTime
-        for truck in self.trucks:
-            truck_wait_time = truck.get_wait_time()
-            print(f'{truck.name} wait time: {truck_wait_time}')
-        # 统计TotalWaitTime
-        total_wait_time = sum([truck.get_wait_time() for truck in self.trucks])
-        print(f'TotalWaitTime: {total_wait_time}')
 
     def start(self, total_time:float=60*8)->dict:
         assert self.road is not None, "road can not be None"

@@ -124,21 +124,24 @@ def run_simulation(config_file=None):
         # 读取运行结果并保存，等待绘图
         ## 读取production
         times = []
-        produced_tons = []
-        service_count = []
-        waiting_truck_count = []
+        produced_tons_list = []
+        service_count_list = []
+        waiting_truck_count_list = []
         # ticks 是一个字典 key为时间，value为一个字典，包含了当前时间的所有信息
         for tick in ticks.values():
+            if 'mine_states' not in tick:
+                continue
             tick = tick['mine_states']
             times.append(tick['time'])
-            produced_tons.append(tick['produced_tons'])
-            service_count.append(tick['service_count'])
-            waiting_truck_count.append(tick['waiting_truck_count'])
+            produced_tons_list.append(tick['produced_tons'])
+            service_count_list.append(tick['service_count'])
+            waiting_truck_count_list.append(tick['waiting_truck_count'])
         states_dict[dispatcher_name] = {
             'times': times,
-            'produced_tons': produced_tons,
-            'service_count': service_count,
-            'waiting_truck_count': waiting_truck_count
+            'produced_tons_list': produced_tons_list,
+            'service_count_list': service_count_list,
+            'waiting_truck_count_list': waiting_truck_count_list,
+            'summary': ticks['summary']
         }
     # 绘制图表
     charter.draw(states_dict)
