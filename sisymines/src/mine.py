@@ -224,6 +224,7 @@ class Mine:
 
         :return:
         """
+        pass
 
 
     def start(self, total_time:float=60*8)->dict:

@@ -28,3 +28,11 @@ class RandomDispatcher(BaseDispatcher):
         # 随机一个数字
         random_index = self.np_random.randint(0, len(avaliable_loadsites))
         return random_index
+
+if __name__ == "__main__":
+    dispatcher = RandomDispatcher()
+    print(dispatcher.give_init_order(1,2))
+    print(dispatcher.give_haul_order(1,2))
+    print(dispatcher.give_back_order(1,2))
+
+    print(dispatcher.total_order_count,dispatcher.init_order_count)
