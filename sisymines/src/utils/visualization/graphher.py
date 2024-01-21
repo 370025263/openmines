@@ -41,13 +41,16 @@ class VisualGrapher:
 
     def plot_tick(self, i, pbar):
         self.update_progress(pbar)
-        tick_data = self.data[str(i)]
+        try:
+            tick_data = self.data[str(i)]
+        except KeyError:
+            return
         self.ax.clear()
         self.ax.set_xlim(0, 1)
         self.ax.set_ylim(0, 1)
         mine_data = tick_data['mine_states']
         # 1. 在图片上方展示矿山的总产量和服务次数
-        self.ax.set_title(f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']} time: {i}/{len(self.data)}")
+        self.ax.set_title(f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']} time: {i}/{len(self.data)-1}")
 
         # self.ax.text(0.5, 0.95, f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']}",
         #              ha='center', va='center', fontsize=10, color='red')
@@ -159,6 +162,6 @@ class ImageHandler(HandlerBase):
 
 
 if __name__ == '__main__':
-    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/test/junk/results/MINE:北露天矿_ALGO:NaiveDispatcher_TIME:2024-01-19 22:33:49.json"
+    path = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/sisymines/src/cli/results/MINE:NorthOpenPitMine_ALGO:RandomDispatcher_TIME:2024-01-21 14:26:04.gif"
     visualizer = VisualGrapher(path)
     visualizer.create_animation(output_path='output.gif')
