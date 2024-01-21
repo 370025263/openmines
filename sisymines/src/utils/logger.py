@@ -26,9 +26,10 @@ class MineLogger:
         self.CONSOLE_HANDLER.setFormatter(logging.Formatter(LOG_FORMAT))
 
         # 文件处理器
-        if not os.path.exists(LOG_FILE_PATH):
-            os.makedirs(LOG_FILE_PATH)
-        self.FILE_HANDLER = logging.FileHandler(LOG_FILE_PATH / f'sisymines_sim_{time_str}.log')
+        self.log_path = log_path
+        if not os.path.exists(self.log_path):
+            os.makedirs(self.log_path)
+        self.FILE_HANDLER = logging.FileHandler(self.log_path / f'sisymines_sim_{time_str}.log')
         self.FILE_HANDLER.setLevel(FILE_LOG_LEVEL)
         self.FILE_HANDLER.setFormatter(logging.Formatter(LOG_FORMAT))
 
