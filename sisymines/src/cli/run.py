@@ -32,8 +32,10 @@ def load_config(filename):
 
 def run_dispatch_sim(dispatcher: BaseDispatcher, config_file):
     config = load_config(config_file)
+    # log_path 为cwd下的logs文件夹
+    log_path = pathlib.Path.cwd() / 'logs'
     # 初始化矿山
-    mine = Mine(config['mine']['name'])
+    mine = Mine(config['mine']['name'], log_path=log_path)
     mine.add_dispatcher(dispatcher)
     # 初始化充电站和卡车
     charging_site = ChargingSite(config['charging_site']['name'], position=config['charging_site']['position'])
@@ -120,6 +122,7 @@ def run_simulation(config_file=None):
     # 开始运行对比实验
     for dispatcher in dispatchers_list:
         dispatcher_name = dispatcher.name
+        # RUN SIMULATION
         ticks = run_dispatch_sim(dispatcher, config_file)
         # 读取运行结果并保存，等待绘图
         ## 读取production
