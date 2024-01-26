@@ -6,6 +6,8 @@ from sisymines.src.load_site import ParkingLot
 class Dumper:
     def __init__(self, name:str, dumper_cycle_time:float, position_offset:tuple=(0, 0.01)):
         self.name = name
+        self.type = "dumper"
+        self.dump_site = None
         self.position = None
         self.position_offset = position_offset
         self.dumper_tons:float = 0.0  #  the tons of material the dumper has received
@@ -39,6 +41,7 @@ class DumpSite:
         self.status = dict()  # the status of shovel
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
+        self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -66,6 +69,8 @@ class DumpSite:
     def add_dumper(self, dumper:Dumper):
         dumper_count = len(self.dumper_list)
         dumper.position = tuple(a + b for a, b in zip(self.position, dumper.position_offset*(dumper_count+1)))
+        # 在dumper中添加自己引用
+        dumper.dump_site = self
         self.dumper_list.append(dumper)
 
     def get_produce_tons(self):

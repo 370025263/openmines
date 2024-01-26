@@ -5,6 +5,8 @@ import simpy
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm
+from simpy.resources.resource import Request
+
 
 
 from sisymines.src.charging_site import ChargingSite
@@ -34,6 +36,21 @@ TRUCK_DEFAULT_SPEED = 25 # km/h
         卡车时间(time)：
             仿真时间
         """
+
+class LoadRequest(Request):
+    """
+    自定义的simpy资源请求类，用于在卡车到达装载区时请求铲车资源；
+    """
+    def __init__(self, resource, truck, load_site):
+        super().__init__(resource)
+        self.truck = truck
+        self.load_site = load_site
+
+class DumpRequest(Request):
+    def __init__(self, resource, truck, dump_site):
+        super().__init__(resource)
+        self.truck = truck
+        self.dump_site = dump_site
 
 class Truck:
     def __init__(self, name:str, truck_capacity:float, truck_speed:float=TRUCK_DEFAULT_SPEED):
@@ -143,6 +160,8 @@ class Truck:
                                                         f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] is jammed at road from {self.current_location.name} '
                                                         f'to {self.target_location.name} for {jam_time:.2f} minutes',
                                                         info={"name": self.name, "status": "jam", "speed": 0,
+                                                              "start_location": self.current_location.name,
+                                                                "end_location": self.target_location.name,
                                                               "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
             self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
         else:
@@ -278,7 +297,7 @@ class Truck:
             load_site:LoadSite = self.mine.load_sites[dest_load_index]
             shovel = load_site.get_available_shovel()
 
-            with shovel.res.request() as req:
+            with LoadRequest(shovel.res, self, load_site) as req:
                 # 申请到资源之前的操作
                 truck_queue_index = self.check_queue_position(shovel, req)
                 self.event_pool.add_event(Event(self.env.now, "wait shovel", f'Truck:[{self.name}] Wait shovel {shovel.name}',
@@ -328,7 +347,7 @@ class Truck:
             # 到达卸载区并开始请求资源并卸载
             self.logger.debug(f'Time:<{self.env.now}> Truck:[{self.name}] Arrived at {dest_unload_site.name} at {self.env.now}')
             dumper:Dumper = dest_unload_site.get_available_dumper()
-            with dumper.res.request() as req:
+            with DumpRequest(dumper.res, self, dest_unload_site) as req:
                 # 申请到资源之前的操作
                 # ...
                 self.event_pool.add_event(Event(self.env.now, "wait dumper", f'Truck:[{self.name}] Wait dumper {dumper.name}',

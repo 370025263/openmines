@@ -18,7 +18,7 @@ class Road:
         self.load_site_num: int = road_matrix.shape[0]
         self.dump_site_num: int = road_matrix.shape[1]
         self.charging_to_load: list = charging_to_load_road_matrix
-
+        self.road_status = None
         # 默认参数
         default_params = {
             'lambda_repair': 1 / (60 * 2),  # 指数分布的lambda值
@@ -79,6 +79,9 @@ class Road:
                                                             f'and will end at {repair_end_time:.2f}, '
                                                             f'vehicle on this road will have to suffer punish_distance.',
                                                             info={"road_id": road_id,
+                                                                  "start_location": current_site.name,
+                                                                    "end_location": target_site.name,
+                                                                    "repair_start_time": self.env.now,
                                                                   "repair_end_time": repair_end_time,
                                                                   "repair_duration": repair_duration,
                                                                   }))
