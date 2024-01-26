@@ -366,7 +366,8 @@ class TickGenerator:
             "MatchingFactor":match_factor,
             "TotalWaitTime":total_wait_time,
             "avg_time_per_order":avg_time_per_order,
-            "total_order_count":total_order_count
+            "total_order_count":total_order_count,
+            "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count']
         }
 
 

@@ -37,6 +37,7 @@ class Charter:
             decision_latency = states['summary']['avg_time_per_order']
             matching_factor = states['summary']['MatchingFactor']
             total_wait_time = states['summary']['TotalWaitTime']
+            road_jams = states['summary']['RoadJams']
             produced_tons = states['produced_tons_list'][-1]
 
             # 绘制产量曲线
@@ -49,7 +50,8 @@ class Charter:
                 'Produced Tons': f"{round(produced_tons, 2):.2f}",
                 'Decision Latency (ms)': f"{round(decision_latency, 1):.1f}",
                 'Matching Factor': f"{round(matching_factor, 2):.2f}",
-                'Total Wait Time': f"{round(total_wait_time, 2):.2f}"
+                'Total Wait Time': f"{round(total_wait_time, 2):.2f}",
+                "Road Jams": road_jams
             })
 
         # 设置图例和标题
