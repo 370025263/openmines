@@ -45,62 +45,51 @@ class LLMDispatcher(BaseDispatcher):
         # 获取Road距离信息
         road_matrix = mine.road.road_matrix
 
-
         prompt = f"""
-        你现在是一个LLM调度器，你需要根据已有的信息为当前卡车分配一个初始任务的目标地点。
-        当前卡车在充电区，需要前往装载区进行装载。
-        背景知识：
-            矿山中有多个装载区和卸载区还有交通道路，矿卡需要在两地之间往返运货。
-            装载区的装载能力和排队情况各自不同，卸载区的卸载能力和排队情况也各自不同。
-            矿卡是异构的，其运行速度和装载吨数上存在区别。
-            如果某条道路上派出了较多的矿卡，那么随机事件如堵车、道路维修等发生的概率会增大，会导致矿卡的运行时间变长。
+                You are now an LLM (Large Language Model) scheduler, and your task is to assign an initial task destination for the current truck based on the available information.
+                The current truck is in the charging area and needs to go to the loading area for loading.
+                Background knowledge:
+                    The mine has multiple loading and unloading areas as well as traffic roads. Mining trucks need to transport goods back and forth between these areas.
+                    Loading areas have different loading capacities and queue situations, and unloading areas have different unloading capacities and queue situations.
+                    The mining trucks are heterogeneous, varying in their running speeds and loading tonnage.
+                    If a road has a large number of mining trucks dispatched, the probability of random events such as traffic jams and road repairs increases, leading to longer operation times for the trucks.
+
+                Current mine information:
+                        Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": loadsite.load_site_productivity, "distance": mine.road.charging_to_load[i],
+                                          "queue_length": loadsite_queue_length[i],
+                                          "estimated_queue_wait_times": estimated_loadsite_queue_wait_times[i]
+                                          } for i, loadsite in enumerate(mine.load_sites)]},
+
+                        Current road information:
+                            {[{"road_id": f"{cur_location} to {load_site.name}", "road_desc": f"from {cur_location} to {load_site.name}", "distance": mine.road.charging_to_load[j],
+                               "trucks_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_count"],
+                               "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_jam_count"],
+                               "is_road_in_repair": mine.road.road_status[(cur_location, load_site.name)]["repair_count"]} for j, load_site in enumerate(mine.load_sites)]}
 
 
-
-        当前矿山信息：
-                装载区：{ [{
-                    "name": loadsite.name,
-                    "type": "loadsite",
-                    "load_capability(tons/min)": loadsite.load_site_productivity,
-                    "distance": mine.road.charging_to_load[i],
-                    "queue_length": loadsite_queue_length[i],
-                    "estimated_queue_wait_times":estimated_loadsite_queue_wait_times[i]
-                        }  for i,loadsite in enumerate(mine.load_sites)]},
-
-                当前道路信息：
-                    { [  {
-                    "road_id": f"{cur_location} to {load_site.name}",
-                    "road_desc": f"from {cur_location} to {load_site.name}",
-                    "distance": mine.road.charging_to_load[j],
-                    "trucks_on_this_road": mine.road.road_status[(cur_location,load_site.name)]["truck_count"],
-                    "jammed_trucks_on_this_road": mine.road.road_status[(cur_location,load_site.name)]["truck_jam_count"],
-                    "is_road_in_repair": mine.road.road_status[(cur_location,load_site.name)]["repair_count"] } for j,load_site in enumerate(mine.load_sites)]}
+                Current order information:
+                {{
+                "cur_time": {mine.env.now},
+                "order_type": "init_order",
+                "truck_name": "{truck.name}",
+                "truck_capacity": {truck.truck_capacity},
+                "truck_speed": {truck.truck_speed}
+                }}
+                Historical scheduling decisions:
+                {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_all]}
 
 
-        当前订单信息：
-        {{
-        "cur_time": {mine.env.now},
-        "order_type": "init_order",
-        "truck_name": "{truck.name}",
-        "truck_capacity": {truck.truck_capacity},
-        "truck_speed": {truck.truck_speed}
-        }}
-        历史调度决策：
-        {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_all]}
+                Please assign an initial task destination for the current truck based on the above information,
+                Requirements:
+                1. Overall objective: Considering the impact of random events on the road, choose the loading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
+                {{
+                    "truck_name": "{truck.name}",
+                    "loadingsite_index": an integer from 0 to {len(mine.load_sites) - 1}
+                }}
 
+                """
 
-        请根据以上信息为当前卡车分配一个初始任务的目标地点,
-        要求：
-        1.总体目标：考虑到道路上随机事件的影响，尽可能选择距离短的装载区，同时避免堵车、道路维修等情况。
-        2.首先对从当前地点前往装载区的道路的通行状况进行一步步的总结, 要参照历史决策。
-        3.然后根据总结的结果，进一步对装载区的预期用时、拥挤程度进行主观估计。
-        2.最终，根据上方总结，参考总体目标，给出如下的json字符串作为决定结果：
-        {{
-            "truck_name": "{truck.name}",
-            "loadingsite_index": a integer from 0 to {len(mine.load_sites) - 1}
-        }}
-
-        """
         for i in range(3):
             try:
                 response = self.OPENAI.get_response(prompt=prompt)
@@ -162,41 +151,30 @@ class LLMDispatcher(BaseDispatcher):
         road_matrix = mine.road.road_matrix
 
         prompt = f"""
-                你现在是一个LLM调度器，你需要根据已有的信息为当前卡车分配目标地点。
-                背景知识：
-                矿山中有多个装载区和卸载区还有交通道路，矿卡需要在两地之间往返运货。
-                装载区的装载能力和排队情况各自不同，卸载区的卸载能力和排队情况也各自不同。
-                矿卡是异构的，其运行速度和装载吨数上存在区别。
-                如果某条道路上存在较多的矿卡，那么随机事件如堵车、道路维修等发生的概率会增大，导致矿卡的运行时间变长。
-                
-                当前矿山信息：
-                装载区：{ [{
-                    "name": loadsite.name,
-                    "type": "loadsite",
-                    "load_capability(tons/min)": loadsite.load_site_productivity,
-                    "queue_length": loadsite_queue_length[i]
-                        }  for i,loadsite in enumerate(mine.load_sites)]},
-                卸载区：{ [{
-                    "name": dumpsite.name,
-                    "type": "dumpsite",
-                    "index": j,
-                    "distance": road_matrix[cur_loadsite_index][j],
-                    "queue_length": dumpsite_queue_length[j]
-                        }  for j,dumpsite in enumerate(avaliable_dumpsites)]},
-                当前道路信息：
-                    { [  {
-                    "road_id": f"{cur_location} to {dumpsite.name}",
-                    "road_desc": f"from {cur_location} to {dumpsite.name}",
-                    "distance": road_matrix[cur_loadsite_index][j],
-                    "trucks_on_this_road": mine.road.road_status[(cur_location,dumpsite.name)]["truck_count"],
-                    "jammed_trucks_on_this_road": mine.road.road_status[(cur_location,dumpsite.name)]["truck_jam_count"],
-                    "is_road_in_repair": mine.road.road_status[(cur_location,dumpsite.name)]["repair_count"] } for j,dumpsite in enumerate(avaliable_dumpsites)]}
-                
-                历史调度决策：
+                You are now an LLM scheduler, and your task is to assign a target location for the current truck based on the available information.
+                Background knowledge:
+                The mine has multiple loading and unloading areas as well as traffic roads, and mining trucks need to transport goods back and forth between these areas.
+                The loading capacity and queue situation of each loading area are different, as are the unloading capacity and queue situation of each unloading area.
+                The mining trucks are heterogeneous, with differences in their running speeds and loading capacities.
+                If a road has many mining trucks, the probability of random events such as traffic jams and road maintenance increases, leading to longer operation times for the trucks.
+
+                Current mine information:
+                Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": loadsite.load_site_productivity, "queue_length": loadsite_queue_length[i]
+                                  } for i, loadsite in enumerate(mine.load_sites)]},
+                Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": j, "distance": road_matrix[cur_loadsite_index][j],
+                                    "queue_length": dumpsite_queue_length[j]
+                                    } for j, dumpsite in enumerate(avaliable_dumpsites)]},
+                Current road information:
+                    {[{"road_id": f"{cur_location} to {dumpsite.name}", "road_desc": f"from {cur_location} to {dumpsite.name}", "distance": road_matrix[cur_loadsite_index][j],
+                       "trucks_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_count"],
+                       "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_jam_count"],
+                       "is_road_in_repair": mine.road.road_status[(cur_location, dumpsite.name)]["repair_count"]} for j, dumpsite in enumerate(avaliable_dumpsites)]}
+
+                Historical scheduling decisions:
                     {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_haul]}
-        
-                当前卡车在装载区{cur_location}，需要前往卸载区进行卸载。
-                当前卡车请求订单的信息：
+
+                The current truck is at the loading area {cur_location} and needs to go to the unloading area for unloading.
+                Current truck order request information:
                 {{
                 "cur_time": {mine.env.now},
                 "order_type": "haul_order",
@@ -206,18 +184,17 @@ class LLMDispatcher(BaseDispatcher):
                 "truck_speed": {truck.truck_speed}
                 }}
 
-                请根据以上信息为当前卡车分配一个合适的卸载区作为目标地点,让其尽快到达目标地点进行卸载：
-                要求：
-                1.总体目标：考虑到道路上随机事件的影响，尽可能选择距离短的卸载区，同时避免堵车、道路维修等情况。
-                2.首先对从当前地点前往卸载区的道路的通行状况进行一步步的总结, 要参照上方的历史调度决策。
-                3.然后根据总结的结果，进一步对每个卸载区的预期用时、拥挤程度进行主观估计。
-                2.最终，根据上方总结，参考总体目标，给出如下的json字符串作为决定结果：
+                Please assign a suitable unloading area as the target location for the current truck based on the information above, allowing it to reach the target location as quickly as possible for unloading:
+                Requirements:
+                1. Overall objective: Considering the impact of random events on the road, choose the unloading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
                 {{
                     "truck_name": "{truck.name}",
-                    "dumpsite_index": a integer from 0 to  {len(avaliable_dumpsites) - 1}
+                    "dumpsite_index": an integer from 0 to {len(avaliable_dumpsites) - 1}
                 }}
 
                 """
+
         for i in range(3):
             try:
                 response = self.OPENAI.get_response(prompt)
@@ -283,62 +260,49 @@ class LLMDispatcher(BaseDispatcher):
         past_orders_back = [order for order in self.order_history if order["order_type"] == "back_order"][-10:]
 
         prompt = f"""
-            你现在是一个LLM调度器，你需要根据已有的信息为当前卡车分配返回装载区的任务。
-            背景知识：
-            矿山中有多个装载区和卸载区还有交通道路，矿卡在装载区装满矿石后，需要前往卸载区卸货，然后返回装载区重复这个过程。
-            卸载区的卸载能力和排队情况各自不同，装载区的装载能力和排队情况也各自不同。
-            矿卡是异构的，其运行速度和装载吨数上存在区别。
-            如果某条道路上存在较多的矿卡，那么随机事件如堵车、道路维修等发生的概率会增大，导致矿卡的运行时间变长。
+                    You are now an LLM scheduler, and your task is to assign the current truck a task to return to the loading area.
+                    Background knowledge:
+                    The mine has multiple loading and unloading areas as well as traffic roads. After being loaded with ore at a loading area, the mining truck needs to go to an unloading area to unload, and then return to the loading area to repeat the process.
+                    Each unloading area has different unloading capabilities and queue situations, and each loading area also has different loading capabilities and queue situations.
+                    The mining trucks are heterogeneous, with differences in their running speeds and loading capacities.
+                    If a road has many mining trucks, the probability of random events like traffic jams and road maintenance increases, leading to longer operation times for the trucks.
 
-            当前矿山信息：
-            卸载区：{[{
-                        "name": dumpsite.name,
-                        "type": "dumpsite",
-                        "index": i,
-                        "queue_length": dumpsite_queue_length[i]
-                            } for i, dumpsite in enumerate(mine.dump_sites)]},
-            装载区：{[{
-                        "name": loadsite.name,
-                        "type": "loadsite",
-                        "index": j,
-                        "distance": road_matrix[j][cur_dumpsite_index],
-                        "queue_length": loadsite_queue_length[j]
-                                } for j, loadsite in enumerate(avaliable_loadsites)]},
-            当前道路信息：
-                  {[{
-                        "road_id": f"{cur_location} to {loadsite.name}",
-                        "road_desc": f"from {cur_location} to {loadsite.name}",
-                        "distance": road_matrix[j][cur_dumpsite_index],
-                        "trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_count"],
-                        "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_jam_count"],
-                        "is_road_in_repair": mine.road.road_status[(cur_location, loadsite.name)]["repair_count"]} 
+                    Current mine information:
+                    Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": i, "queue_length": dumpsite_queue_length[i]
+                                        } for i, dumpsite in enumerate(mine.dump_sites)]},
+                    Loading areas: {[{"name": loadsite.name, "type": "loadsite", "index": j, "distance": road_matrix[j][cur_dumpsite_index],
+                                      "queue_length": loadsite_queue_length[j]
+                                      } for j, loadsite in enumerate(avaliable_loadsites)]},
+                    Current road information:
+                          {[{"road_id": f"{cur_location} to {loadsite.name}", "road_desc": f"from {cur_location} to {loadsite.name}", "distance": road_matrix[j][cur_dumpsite_index],
+                             "trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_count"],
+                             "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_jam_count"],
+                             "is_road_in_repair": mine.road.road_status[(cur_location, loadsite.name)]["repair_count"]}
                             for j, loadsite in enumerate(avaliable_loadsites)]}
 
-            历史调度决策：
-                    {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_back]}
-        
-            当前卡车在卸载区{cur_location}，需要返回装载区进行装载。
-            当前卡车请求订单的信息：
-            {{
-            "cur_time": {mine.env.now},
-            "order_type": "back_order",
-            "truck_location": "{truck.current_location.name}",
-            "truck_name": "{truck.name}",
-            "truck_capacity": {truck.truck_capacity},
-            "truck_speed": {truck.truck_speed}
-            }}
+                    Historical scheduling decisions:
+                            {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_back]}
 
-            请根据以上信息为当前卡车分配一个合适的装载区作为目标地点,让其尽快返回进行装载：
-            要求：
-                1.总体目标：考虑到道路上随机事件的影响，尽可能选择距离短的装载区，同时避免堵车、道路维修等情况。
-                2.首先对从当前地点前往装载区的道路的通行状况进行一步步的总结, 要参照上方的历史调度决策。
-                3.然后根据总结的结果，进一步对每个装载区的预期用时、拥挤程度进行主观估计。
-                2.最终，根据上方总结，参考总体目标，给出如下的json字符串作为决定结果：
-            {{
-                "truck_name": "{truck.name}",
-                "loadsite_index": a int number from 0 to  {len(avaliable_loadsites) - 1}
-            }}
-        """
+                    The current truck is at the unloading area {cur_location} and needs to return to the loading area for loading.
+                    Current truck order request information:
+                    {{
+                    "cur_time": {mine.env.now},
+                    "order_type": "back_order",
+                    "truck_location": "{truck.current_location.name}",
+                    "truck_name": "{truck.name}",
+                    "truck_capacity": {truck.truck_capacity},
+                    "truck_speed": {truck.truck_speed}
+                    }}
+
+                    Please assign a suitable loading area as the target location for the current truck based on the information above, allowing it to return as quickly as possible for loading:
+                    Requirements:
+                        1. Overall objective: Considering the impact of random events on the road, choose the loading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                        2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
+                    {{
+                        "truck_name": "{truck.name}",
+                        "loadsite_index": an integer number from 0 to {len(avaliable_loadsites) - 1}
+                    }}
+                """
 
         for i in range(3):
             try:
@@ -373,7 +337,7 @@ class LLMDispatcher(BaseDispatcher):
 
 
 class OPENAI:
-    def __init__(self, model_name="gpt-3.5-turbo-0613"):
+    def __init__(self, model_name="gpt-3.5-turbo"):
         self.api_key = "sk-c6aQsx5gHenXWaztBa55E9D5D76b43818206A5Ea1f91B204"
         self.api_base = "https://api.qaqgpt.com/v1"
         self.model_name = model_name
@@ -385,7 +349,7 @@ class OPENAI:
     def get_response(self, prompt):
         message =  [
                     {"role": "user", "content": prompt}]
-        time.sleep(3)
+        # time.sleep(1)
         response = openai.ChatCompletion.create(model=self.model_name, messages=message)
         for re in response["choices"]:
             return re["message"]["content"].strip()

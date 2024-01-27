@@ -65,7 +65,7 @@ class Truck:
         self.event_pool = EventPool()
         # the probalistics of the truck
         self.expected_working_time_without_breakdown = 60*6  # in minutes
-        self.expected_working_time_until_unrepairable = 60*24*7  # in minutes
+        self.expected_working_time_until_unrepairable = 60*24*7*7  # in minutes
         self.repair_avg_time = 10
         self.repair_std_time = 3
         # truck status
@@ -149,7 +149,14 @@ class Truck:
         # 正规化总的堵车概率
         total_prob = total_prob / len(truck_positions)
         # 使用蒙特卡洛方法来决定是否会发生堵车
-        jam_position = np.random.choice(x, p=total_prob / np.sum(total_prob))
+        try:
+            if np.sum(total_prob) == 0:
+                probabilities = np.ones_like(total_prob) / len(total_prob)
+            else:
+                probabilities = total_prob / (np.sum(total_prob))
+            jam_position = np.random.choice(x, p=probabilities)
+        except:
+            print("bug")
         # 在jam_position处使用weibull分布，采样一个可能的堵车时间
         jam_time = np.random.weibull(2) * 10
         time_to_jam = jam_position * duration
