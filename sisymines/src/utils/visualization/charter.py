@@ -59,6 +59,12 @@ class Charter:
         axs[0, 1].legend()
         axs[0, 0].set_title("Production Over Time")
         axs[0, 1].set_title("Waiting Trucks Over Time")
+        # For the "Production Over Time" plot
+        axs[0, 0].set_xlabel("Time (mins)")  # Replace "units" with appropriate time units
+        axs[0, 0].set_ylabel("Production (tons)")  # Adjust the units if necessary
+        # For the "Waiting Trucks Over Time" plot
+        axs[0, 1].set_xlabel("Time (mins)")  # Replace "units" with appropriate time units
+        axs[0, 1].set_ylabel("Number of Waiting Trucks")  # Or any appropriate label that describes the data
 
         # 创建并显示表格
         df = pd.DataFrame(final_table)
