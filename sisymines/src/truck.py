@@ -59,7 +59,7 @@ class Truck:
         self.truck_speed = truck_speed  # truck speed in km/h
         self.current_location = None
         self.target_location = None
-        self.journey_start_time = None
+        self.journey_start_time = 0
         self.journey_coverage = None
         self.last_breakdown_time = 0
         self.event_pool = EventPool()
@@ -282,6 +282,7 @@ class Truck:
         self.status = "waiting for order"
         dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
         self.first_order_time = self.env.now
+        self.target_location = self.mine.load_sites[dest_load_index]
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
@@ -336,6 +337,7 @@ class Truck:
             dest_unload_index: int = self.dispatcher.give_haul_order(truck=self, mine=self.mine)
             dest_unload_site: DumpSite = self.mine.dump_sites[dest_unload_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_unload_site)
+            self.target_location = dest_unload_site
 
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
@@ -383,6 +385,7 @@ class Truck:
             dest_load_index: int = self.dispatcher.give_back_order(truck=self, mine=self.mine)
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
+            self.target_location = dest_load_site
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
@@ -441,6 +444,8 @@ class Truck:
         :return:
         """
         assert distance > 0, "distance must be greater than 0"
+        if self.journey_start_time is None:
+            print(1)
         assert self.journey_start_time is not None, "journey_start_time must be not None, is the truck journey started?"
 
         # 获取当前环境时间
