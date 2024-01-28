@@ -40,7 +40,11 @@ class MineLogger:
         :return:
         """
         logger = logging.getLogger(name)
-        logger.addHandler(self.CONSOLE_HANDLER)
-        logger.addHandler(self.FILE_HANDLER)
+        # 检查是否已经添加了控制台处理器
+        if not any(isinstance(handler, logging.StreamHandler) for handler in logger.handlers):
+            logger.addHandler(self.CONSOLE_HANDLER)
+        # 检查是否已经添加了文件处理器
+        if not any(isinstance(handler, logging.FileHandler) for handler in logger.handlers):
+            logger.addHandler(self.FILE_HANDLER)
         logger.setLevel(logging.DEBUG)
         return logger
