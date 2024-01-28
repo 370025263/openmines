@@ -163,11 +163,8 @@ class TickGenerator:
                     status = 4
                     # 计算卡车位置
                     # 等待卸载位置=卸载区位置+停车场相对位置偏移=停车场位置
-                    truck_cur_location_name = truck.current_location
-                    try:
-                        parkinglot = self.mine.get_dest_obj_by_name(truck_cur_location_name).parking_lot
-                    except:
-                        print("error")
+                    truck_cur_location_name = truck.current_location.name
+                    parkinglot = self.mine.get_dest_obj_by_name(truck_cur_location_name).parking_lot
                     truck_position = np.array(parkinglot.position)  # 已经处理过
 
                 ## 车辆在卸载点卸载
@@ -345,18 +342,25 @@ class TickGenerator:
         loading_time:np.array = np.zeros((num_trucks,num_shovels))
         for i,truck in enumerate(trucks):
             for j,shovel in enumerate(shovels):
-                loading_time[i, j] = round((truck.truck_capacity / shovel.shovel_tons) * shovel.shovel_cycle_time, 1) # in mins
+                loading_time[i, j] = round((truck.truck_capacity / shovel.shovel_tons), 1) * shovel.shovel_cycle_time# in mins
 
         # 按行按列去重复
         loading_time = np.unique(loading_time, axis=0)
         unique_loading_time = np.unique(loading_time, axis=1).astype(int)
-        unique_loading_time = np.ones_like(unique_loading_time) + unique_loading_time
+        # 对异构铲车的子构数量进行统计
+        shovel_type_count = dict()
+        for i in range(unique_loading_time.shape[0]):  # truck type index
+                int_data = np.array(loading_time[i,:]).astype(int)
+                for value in set(int_data):
+                    shovel_type_count[f'{i}_{value}'] = list(int_data).count(value)  # it means truck type i w.r.t shovel type num
+
+        # unique_loading_time = np.ones_like(unique_loading_time) + unique_loading_time
         # 对每一行求lcm
         lcm_load_time = np.lcm.reduce(unique_loading_time, axis=1)
         upside_down_sum = 0
         for i in range(unique_loading_time.shape[0]):
             for j in range(unique_loading_time.shape[1]):
-                upside_down_sum += lcm_load_time[i]/unique_loading_time[i,j]
+                upside_down_sum += shovel_type_count[f'{i}_{unique_loading_time[i,j]}']*(lcm_load_time[i]/unique_loading_time[i,j])
         match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg)
         print(f'MatchingFactor: {match_factor}')
         total_wait_time = sum([truck.get_wait_time() for truck in self.mine.trucks])
