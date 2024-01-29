@@ -1,16 +1,22 @@
 import json
 import os
-
 import pandas as pd
-from matplotlib import pyplot as pl, pyplot as plt
+from matplotlib import pyplot as plt
 from pathlib import Path
+
+from matplotlib.font_manager import FontProperties
+
+# 设置Times New Roman字体
+times_new_roman = FontProperties(family='Times New Roman', size=8)
 
 class Charter:
     def __init__(self, config_file):
         self.config_file = config_file
         self.config_name = Path(config_file).name
-        self.img_name = self.config_name.replace('.json', '.png')
-        self.fig = None
+        self.img_name = self.config_name.replace('.json', '.tiff')
+        self.tab_name = self.config_name.replace('.json', '') + "_table" + '.tiff'
+        self.fig_img = None
+        self.fig_tab = None
 
         # 使用Path来处理路径，以确保跨平台兼容性
         self.result_path = Path.cwd() / 'results'
@@ -18,16 +24,13 @@ class Charter:
         # 确保结果目录存在
         self.result_path.mkdir(exist_ok=True)
 
-        # 使用os.path.join或Path对象组合路径
+        # 使用Path对象组合路径
         self.img_path = self.result_path / self.img_name
+        self.tab_path = self.result_path / self.tab_name
 
     def draw(self, states_dict):
-        ## 绘制每一个算法的产量曲线，并添加图例
-        # 初始化绘图区域，使用2x2的布局，并合并最后一行的两个子图格
-        fig, axs = plt.subplots(2, 2, figsize=(15, 10))
-        fig.delaxes(axs[1, 1])  # 删除第二行第二列的子图
-        fig.delaxes(axs[1, 0])  # 删除第二行第一列的子图
-        ax_table = plt.subplot2grid((2, 2), (1, 0), colspan=2)  # 在第二行添加一个跨越两列的子图用于表格
+        # 绘制图像
+        fig_img, axs = plt.subplots(2, 1, figsize=(3.5, 5))  # 创建两个子图的图像
 
         # 存储最终的production数据
         final_table = []
@@ -41,9 +44,9 @@ class Charter:
             produced_tons = states['produced_tons_list'][-1]
 
             # 绘制产量曲线
-            axs[0, 0].plot(states['times'], states['produced_tons_list'], label=dispatcher_name)
+            axs[0].plot(states['times'], states['produced_tons_list'], label=dispatcher_name, linewidth=0.7)
             # 绘制waitingTruck曲线
-            axs[0, 1].plot(states['times'], states['waiting_truck_count_list'], label=dispatcher_name)
+            axs[1].plot(states['times'], states['waiting_truck_count_list'], label=dispatcher_name, linewidth=0.7)
             # final_table
             final_table.append({
                 'Name': dispatcher_name,
@@ -54,19 +57,22 @@ class Charter:
                 "Road Jams": road_jams
             })
 
-        # 设置图例和标题
-        axs[0, 0].legend()
-        axs[0, 1].legend()
-        axs[0, 0].set_title("Production Over Time")
-        axs[0, 1].set_title("Waiting Trucks Over Time")
-        # For the "Production Over Time" plot
-        axs[0, 0].set_xlabel("Time (mins)")  # Replace "units" with appropriate time units
-        axs[0, 0].set_ylabel("Production (tons)")  # Adjust the units if necessary
-        # For the "Waiting Trucks Over Time" plot
-        axs[0, 1].set_xlabel("Time (mins)")  # Replace "units" with appropriate time units
-        axs[0, 1].set_ylabel("Number of Waiting Trucks")  # Or any appropriate label that describes the data
+        # 设置图像的图例和标题
+        axs[0].legend(prop={'size': 5}, loc='upper left')
+        axs[1].legend(prop={'size': 5}, loc='center right')
+        axs[0].set_title("Production Over Time", fontproperties=times_new_roman)
+        axs[1].set_title("Waiting Trucks Over Time", fontproperties=times_new_roman)
+        axs[0].set_xlabel("Time (mins)", fontproperties=times_new_roman)
+        axs[0].set_ylabel("Production (tons)", fontproperties=times_new_roman)
+        axs[1].set_xlabel("Time (mins)", fontproperties=times_new_roman)
+        axs[1].set_ylabel("Number of Waiting Trucks", fontproperties=times_new_roman)
 
-        # 创建并显示表格
+        plt.tight_layout()
+        self.fig_img = fig_img
+
+
+        # 绘制表格
+        fig_tab, ax_table = plt.subplots(figsize=(15, 5))  # 创建单独的Figure用于表格
         df = pd.DataFrame(final_table)
         ax_table.axis('tight')
         ax_table.axis('off')
@@ -74,16 +80,13 @@ class Charter:
         table.auto_set_font_size(False)
         table.set_fontsize(10)
         table.scale(1, 1.5)
-        # 调整布局并显示图表
-        # 提高dpi以提高图像质量
-        # 调整子图之间的间距
-        plt.subplots_adjust(hspace=0.01, wspace=0.3)
-        # 调整布局并显示图表
+
         plt.tight_layout()
-        plt.show()
-        self.fig = fig
+        self.fig_tab = fig_tab
+
     def save(self):
-        # 保存图表
-        if self.fig is None:
+        # 保存图像
+        if self.fig_img is None or self.fig_tab is None:
             raise Exception("You must draw the chart first!")
-        self.fig.savefig(self.img_path, dpi=300)
+        self.fig_img.savefig(self.img_path, dpi=300, format='tiff')
+        self.fig_tab.savefig(self.tab_path, dpi=300, format='tiff')
