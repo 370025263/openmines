@@ -64,8 +64,6 @@ class FixedGroupDispatcher(BaseDispatcher):
             nearest_dump_site = dump_sites[distances.index(min(distances))]
             self.group_solution[load_site.name]["dumpsite"] = nearest_dump_site
 
-        print(self.group_solution)
-
     def give_init_order(self, truck: "Truck", mine: "Mine") -> int:
         if self.group_solution is None:
             self.compute_solution(mine)
