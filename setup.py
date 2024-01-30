@@ -1,20 +1,25 @@
 from setuptools import setup, find_packages
 
+# 读取requirements.txt文件中的内容
+with open('sisymines/requirements.txt') as f:
+    required = f.read().splitlines()
+
 setup(
     name='sisymines',
     version='0.1.0',
+    author='stone91',  # 添加作者
+    description='Mining Fleet Dispatch Algorithm Framework',  # 添加描述（英文）
+    license='MIT',  # 添加许可证
     packages=find_packages(),
+    package_data={
+        # 确保你的包名正确
+        'sisymines': ['./src/utils/visualization/materials/*'],
+    },
     entry_points={
         'console_scripts': [
             'sisymines=sisymines.src.cli.run:main',
         ],
     },
-    # 依赖项可以在这里列出，例如：
-    install_requires=[
-        'numpy',
-        # 其他依赖...
-    ],
-    # 其他元数据，例如作者、描述、许可证等...
+    install_requires=required,  # 使用requirements.txt中的依赖
+    # 可以在此添加更多元数据，如作者邮箱、项目网址等
 )
-
-
