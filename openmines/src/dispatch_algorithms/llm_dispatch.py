@@ -338,8 +338,8 @@ class LLMDispatcher(BaseDispatcher):
 
 class OPENAI:
     def __init__(self, model_name="gpt-3.5-turbo"):
-        self.api_key = "sk-c6aQsx5gHenXWaztBa55E9D5D76b43818206A5Ea1f91B204"
-        self.api_base = "https://api.qaqgpt.com/v1"
+        self.api_key = "YOUR API KEY"  # token
+        self.api_base = "OPENAI BASE HERE"  # you can choose custom api base, like:"https://api.qaqgpt.com/v1"
         self.model_name = model_name
         self.load_model()
     def load_model(self):
