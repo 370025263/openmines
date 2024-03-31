@@ -1,0 +1,33 @@
+name: Upload to PyPI
+
+on:
+  push:
+    branches:
+      - release  # 触发条件可以根据需要修改
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: 3.9.6  # 可以指定你的 Python 版本
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install setuptools wheel twine
+
+    - name: Build and upload package
+      run: |
+        python setup.py sdist bdist_wheel
+        twine upload --repository pypi dist/*
+      env:
+        TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}  # 将你的 PyPI 用户名和密码存储在 GitHub 仓库的 secrets 中，以保证安全
+        TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
+

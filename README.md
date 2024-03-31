@@ -1,14 +1,16 @@
 # OpenMines: A Light and Comprehensive Mining Simulation Environment for Truck Dispatching
-OpenMines is a Python-based simulation environment designed for truck dispatching in mining operations. It provides a flexible and extensible framework to model and simulate various mining scenarios from a complex-system perspective with probabilistic user-defined events, enabling researchers and practitioners to evaluate and compare different dispatching algorithms.
-
 Accepted in: 2024 35th IEEE Intelligent Vehicles Symposium (IV)
 
 Paper: [to be released]
 
 Authors: Shi Meng<sup>1</sup>, Bin Tian<sup>2,∗</sup>, Xiaotong Zhang<sup>3</sup>, Shuangying Qi<sup>4</sup>, Caiji Zhang<sup>5</sup>, Qiang Zhang<sup>6</sup>
 
-<div style="display: flex; justify-content: space-between;"> <div style="flex-basis: 30%;"> <img src="./imgs/snapshot.png" alt="OpenMines Snapshot" style="max-width: 100%; height: auto;"> <p style="text-align: center; font-size: 12px;">OpenMines Snapshot</p> </div> <div style="flex-basis: 30%;"> <img src="./imgs/north_pit_mine.png" alt="OpenMines Production Curve" style="max-width: 100%; height: auto;"> <p style="text-align: center; font-size: 12px;">Production Curve</p> </div> <div style="flex-basis: 30%;"> <img src="./imgs/north_pit_mine_table.png" alt="OpenMines Result Table" style="max-width: 100%; height: auto;"> <p style="text-align: center; font-size: 12px;">Result Table</p> </div> </div>
 
+## Description
+OpenMines is a Python-based simulation environment designed for truck dispatching in mining operations. It provides a flexible and extensible framework to model and simulate various mining scenarios from a complex-system perspective with probabilistic user-defined events, enabling researchers and practitioners to evaluate and compare different dispatching algorithms.
+
+Visualization is supported:
+![demo](./imgs/openminesdemo.gif)
 
 ## Installation
 OpenMines is available on PyPI and can be installed using pip:
@@ -81,7 +83,8 @@ the result folder will contain the following files:
 - **MINE:{mine_name}_ALGO:{algo_name}_TIME:{sim_time}.json**: the mine information  [the ticks]
 - {mine_name}_table.tiff [a performance table of the algorithms that was configured in your config]
 - {mine_name}.tiff [a production curve of the algorithms over time]
-
+![curve](./imgs/north_pit_mine.png)
+![table](./imgs/north_pit_mine_table.png)
 ## 4. Visualize the result
 you can visualize the result with the following command:
 ```shell
@@ -90,3 +93,4 @@ openmines -v <result_tike_file>.json
 openmines visualize -f <result_tike_file>.json
 ```
 the result will be a gif file in the $CWD/result folder.
+![snapshot](./imgs/snapshot.png)
