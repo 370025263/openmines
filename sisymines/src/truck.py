@@ -75,6 +75,8 @@ class Truck:
         self.total_load_count = 0  # the total load count of the truck
         self.truck_cycle_time = 0
         self.first_order_time = 0
+        # RL
+        self.current_decision_event = None
 
     def set_env(self, mine:"Mine"):
         self.mine = mine
@@ -263,7 +265,13 @@ class Truck:
         except ValueError:
             return 0  # 如果请求不在队列中，则返回-1
 
-    def run(self):
+    def wait_for_decision(self):
+        # 创建一个等待事件
+        self.current_decision_event = self.env.event()
+        yield self.current_decision_event  # 等待rl环境决策
+        return self.current_decision_event.value  # 返回决策结果
+
+    def run(self, is_rl_training=False):
         """
         矿车运行的主干入口函数
         车辆从充电区开始，然后请求init_order前往装载区
@@ -279,8 +287,12 @@ class Truck:
 
         # 轮班开始 车辆从充电区域前往装载区
         self.current_location = self.mine.charging_site
-        self.status = "waiting for order"
-        dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
+        self.status = "waiting for init order"
+        if is_rl_training:
+            # 等待RL agent给出决策;
+            dest_load_index: int = yield self.env.process(self.wait_for_decision())
+        else:
+            dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
         self.first_order_time = self.env.now
         self.target_location = self.mine.load_sites[dest_load_index]
 
@@ -333,8 +345,12 @@ class Truck:
                 last_load_event.info["load_duration"] = self.env.now - last_load_event.info["start_time"]
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
-            self.status = "waiting for order"
-            dest_unload_index: int = self.dispatcher.give_haul_order(truck=self, mine=self.mine)
+            self.status = "waiting for haul order"
+            if is_rl_training:
+                # 等待RL agent给出决策;
+                dest_unload_index: int = yield self.env.process(self.wait_for_decision())
+            else:
+                dest_unload_index: int = self.dispatcher.give_haul_order(truck=self, mine=self.mine)
             dest_unload_site: DumpSite = self.mine.dump_sites[dest_unload_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_unload_site)
             self.target_location = dest_unload_site
@@ -381,8 +397,12 @@ class Truck:
                 last_unload_event.info["unload_duration"] = self.env.now - last_unload_event.info["start_time"]
 
             # 卸载完毕，请求新的装载区，并开始移动到装载区
-            self.status = "waiting for order"
-            dest_load_index: int = self.dispatcher.give_back_order(truck=self, mine=self.mine)
+            self.status = "waiting for back order"
+            if is_rl_training:
+                # 等待RL agent给出决策;
+                dest_load_index: int = yield self.env.process(self.wait_for_decision())
+            else:
+                dest_load_index: int = self.dispatcher.give_back_order(truck=self, mine=self.mine)
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
             self.target_location = dest_load_site

@@ -56,6 +56,9 @@ class Charter:
                 'Total Wait Time': f"{round(total_wait_time, 2):.2f}",
                 "Road Jams": road_jams
             })
+        # 设置坐标轴刻度的字体大小
+        axs[0].tick_params(axis='both', which='major', labelsize=6)
+        axs[1].tick_params(axis='both', which='major', labelsize=6)
 
         # 设置图像的图例和标题
         axs[0].legend(prop={'size': 5}, loc='upper left')
