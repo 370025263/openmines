@@ -334,6 +334,11 @@ class Mine:
 
 
     def start(self, total_time:float=60*8)->dict:
+        """
+        普通策略算法的仿真入口(包括RL策略推理时)
+        :param total_time:
+        :return:
+        """
         assert self.road is not None, "road can not be None"
         assert self.dispatcher is not None, "dispatcher can not be None"
         assert self.charging_site is not None, "charging_site can not be None"
@@ -381,6 +386,58 @@ class Mine:
         self.summary()
         ticks = self.dump_frames(total_time=total_time)
         return ticks
+
+    def start_rl(self, total_time:float=60*8)->dict:
+        """
+        使用RL算法的仿真入口
+        :param total_time:
+        :return:
+        """
+        assert self.road is not None, "road can not be None"
+        assert self.dispatcher is not None, "dispatcher can not be None"
+        assert self.charging_site is not None, "charging_site can not be None"
+        assert len(self.load_sites) > 0, "load_sites can not be empty"
+        assert len(self.dump_sites) > 0, "dump_sites can not be empty"
+        assert len(self.trucks) > 0, "trucks can not be empty"
+        assert total_time > 0, "total_time can not be negative"
+        self.total_time = total_time
+        self.mine_logger.info("simulation started")
+        # start some monitor process for summary
+        for load_site in self.load_sites:
+            # 对停车场队列的监控
+            self.env.process(load_site.parking_lot.monitor_resources(env=self.env,
+                                                                     resources=[shovel.res for shovel in
+                                                                                load_site.shovel_list],
+                                                                     res_objs=load_site.shovel_list))
+            for shovel in load_site.shovel_list:
+                self.env.process(load_site.parking_lot.monitor_resource(env=self.env, res_obj=shovel,
+                                                                        resource=shovel.res))
+            # 对铲车产出的监控
+            for shovel in load_site.shovel_list:
+                self.env.process(shovel.monitor_status(env=self.env))
+            # 对装载区产出、装载区队列的监控
+            self.env.process(load_site.monitor_status(env=self.env))
+
+        for dump_site in self.dump_sites:
+            # 对停车场队列的监控
+            self.env.process(dump_site.parking_lot.monitor_resources(env=self.env,
+                                                                     resources=[dumper.res for dumper in
+                                                                                dump_site.dumper_list],
+                                                                     res_objs=dump_site.dumper_list))
+            for dumper in dump_site.dumper_list:
+                self.env.process(dump_site.parking_lot.monitor_resource(env=self.env, res_obj=dumper,
+                                                                        resource=dumper.res))
+            # 对卸载区产出、卸载区队列的监控
+            self.env.process(dump_site.monitor_status(env=self.env))
+            # 对dumper产出的监控
+            for dumper in dump_site.dumper_list:
+                self.env.process(dumper.monitor_status(env=self.env))
+        # 对矿山整体监控
+        self.env.process(self.monitor_status(env=self.env))
+        # log in the truck as process
+        for truck in self.trucks:
+            self.env.process(truck.run(is_rl_training=True))
+
 
     def dump_frames(self,total_time):
         """使用TickGenerator记录仿真过程中的数据
