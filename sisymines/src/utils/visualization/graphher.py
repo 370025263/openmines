@@ -8,6 +8,10 @@ import matplotlib.animation as animation
 import os
 
 from tqdm import tqdm
+from matplotlib.font_manager import FontProperties
+
+# 定义字体属性
+legend_font = FontProperties(family='Times New Roman', size=8)
 
 plt.rcParams['font.family'] = 'PingFang HK'
 plt.rcParams["axes.unicode_minus"] = False
@@ -18,7 +22,7 @@ class VisualGrapher:
             self.data = json.load(file)
 
         self.truck_colors = {}
-        self.fig, self.ax = plt.subplots()
+        self.fig, self.ax = plt.subplots(figsize=(5, 5))
 
         # Use os.path.join to construct image paths relative to the script's location
         script_directory = os.path.dirname(__file__)
@@ -50,7 +54,7 @@ class VisualGrapher:
         self.ax.set_ylim(0, 1)
         mine_data = tick_data['mine_states']
         # 1. 在图片上方展示矿山的总产量和服务次数
-        self.ax.set_title(f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']} time: {i}/{len(self.data)-1}")
+        self.ax.set_title(f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']} time: {i}/{len(self.data)-1}",fontproperties=legend_font)
 
         # self.ax.text(0.5, 0.95, f"Production: {mine_data['produced_tons']:.2f} Tons, TruckCycles: {mine_data['service_count']}",
         #              ha='center', va='center', fontsize=10, color='red')
@@ -69,9 +73,10 @@ class VisualGrapher:
         ]
 
         # 3. 创建动态图例
+        colors = ['red', 'blue', 'green', 'yellow', 'purple', 'orange', 'brown', 'pink', 'gray', 'cyan']
         legend_elements = [plt.Line2D([0], [0], marker='o', color='w', label=f'{name}: {value}',
-                                      markerfacecolor='black', markersize=2) for name, value in mine_stats]
-        self.ax.legend(handles=legend_elements, loc='upper right', fontsize=3)
+                                      markerfacecolor=colors[i], markersize=5) for i, (name, value) in enumerate(mine_stats)]
+        self.ax.legend(handles=legend_elements, loc='upper right', prop=legend_font)
 
         DUMP_SITE_SCALE = 0.1    # 可以调整卸载区的缩放比例
         LOAD_SITE_SCALE = 0.1
