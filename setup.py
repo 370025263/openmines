@@ -1,11 +1,11 @@
 from setuptools import setup, find_packages
 
 # 读取requirements.txt文件中的内容
-with open('sisymines/requirements.txt') as f:
+with open('openmines/requirements.txt') as f:
     required = f.read().splitlines()
 
 setup(
-    name='sisymines',
+    name='openmines',
     version='0.1.0',
     author='stone91',  # 添加作者
     description='Mining Fleet Dispatch Algorithm Framework',  # 添加描述（英文）
@@ -13,11 +13,11 @@ setup(
     packages=find_packages(),
     package_data={
         # 确保你的包名正确
-        'sisymines': ['./src/utils/visualization/materials/*'],
+        'openmines': ['./src/utils/visualization/materials/*'],
     },
     entry_points={
         'console_scripts': [
-            'sisymines=sisymines.src.cli.run:main',
+            'openmines=openmines.src.cli.run:main',
         ],
     },
     install_requires=required,  # 使用requirements.txt中的依赖
