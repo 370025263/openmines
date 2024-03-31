@@ -1,12 +1,14 @@
 from setuptools import setup, find_packages
 
+import openmines
+
 # 读取requirements.txt文件中的内容
 with open('openmines/requirements.txt') as f:
     required = f.read().splitlines()
 
 setup(
     name='openmines',
-    version='0.1.0',
+    version=openmines.__version__,
     author='stone91',  # 添加作者
     description='Mining Fleet Dispatch Algorithm Framework',  # 添加描述（英文）
     license='MIT',  # 添加许可证
