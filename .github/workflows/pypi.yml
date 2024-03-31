@@ -1,0 +1,31 @@
+name: Upload to PyPI
+
+on:
+  push:
+    branches:
+      - release  # 触发条件可以根据需要修改
+
+jobs:
+  build:
+    runs-on: ubuntu-20.04  # 修改为 ubuntu-20.04
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v2
+
+    - name: Set up Python
+      uses: actions/setup-python@v2
+      with:
+        python-version: '3.9.6'  # 修改为所需的 Python 版本
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        python -m pip install --upgrade setuptools
+        pip install setuptools wheel twine
+        pip install -r openmines/requirements.txt
+
+    - name: Build and upload package
+      run: |
+        python setup.py sdist bdist_wheel
+        twine upload --repository pypi --skip-existing --verbose --non-interactive --username __token__ --password ${{ secrets.PYPI_API_TOKEN }} dist/*
