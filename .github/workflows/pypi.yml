@@ -7,7 +7,7 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-20.04  # 修改为 ubuntu-20.04
 
     steps:
     - name: Checkout code
@@ -16,7 +16,7 @@ jobs:
     - name: Set up Python
       uses: actions/setup-python@v2
       with:
-        python-version: '3.12.2'  # 可以指定你的 Python 版本
+        python-version: '3.9.6'  # 修改为所需的 Python 版本
 
     - name: Install dependencies
       run: |
@@ -32,4 +32,3 @@ jobs:
       env:
         TWINE_USERNAME: ${{ secrets.PYPI_USERNAME }}  # 将你的 PyPI 用户名和密码存储在 GitHub 仓库的 secrets 中，以保证安全
         TWINE_PASSWORD: ${{ secrets.PYPI_PASSWORD }}
-
