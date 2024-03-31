@@ -7,14 +7,15 @@ __pycache__/
 *DS_Store
 
 # result
-sisymines/src/results/*
-sisymines/src/cli/results
-sisymines/src/cli/results/*
-sisymines/src/results
+openmines/src/results/*
+openmines/src/cli/results
+openmines/src/cli/results/*
+openmines/src/results
 # test
-sisymines/src/test/*
-sisymines/test/junk
-sisymines/test/junk/*
+openmines/src/test/*
+openmines/test/junk
+openmines/test/junk/*
+openmines/test/*
 
 # C extensions
 *.so
