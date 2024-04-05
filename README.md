@@ -1,7 +1,7 @@
 # OpenMines: A Light and Comprehensive Mining Simulation Environment for Truck Dispatching
 Accepted in: 2024 35th IEEE Intelligent Vehicles Symposium (IV)
 
-Paper: [to be released]
+Paper: http://arxiv.org/abs/2404.00622
 
 Authors: Shi Meng<sup>1</sup>, Bin Tian<sup>2,∗</sup>, Xiaotong Zhang<sup>3</sup>, Shuangying Qi<sup>4</sup>, Caiji Zhang<sup>5</sup>, Qiang Zhang<sup>6</sup>
 
