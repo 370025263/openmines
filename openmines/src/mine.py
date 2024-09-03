@@ -450,6 +450,6 @@ class Mine:
         print("dumping frames...")
         self.tick_generator.run()
         # 获得年月日时分秒的字符串表示
-        time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        ticks = self.tick_generator.write_to_file(file_name=f'MINE:{self.name}_ALGO:{self.dispatcher.name}_TIME:{time_str}.json')
+        time_str = time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())
+        ticks = self.tick_generator.write_to_file(file_name=f'MINE—{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
         return ticks
