@@ -8,13 +8,19 @@ import matplotlib.animation as animation
 import os
 
 from tqdm import tqdm
+import platform
 from matplotlib.font_manager import FontProperties
 
 # 定义字体属性
 legend_font = FontProperties(family='Times New Roman', size=8)
-
-plt.rcParams['font.family'] = 'PingFang HK'
+if platform.system() == 'Darwin':  # macOS
+    plt.rcParams['font.family'] = 'PingFang HK'
+elif platform.system() == 'Windows':  # Windows
+    plt.rcParams['font.family'] = 'SimHei'  # 常用的中文字体之一
+else:  # Linux or others
+    plt.rcParams['font.family'] = 'DejaVu Sans'  # 常用的跨平台字体
 plt.rcParams["axes.unicode_minus"] = False
+
 
 class VisualGrapher:
     def __init__(self, json_path):

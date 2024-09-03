@@ -35,7 +35,7 @@ class TickGenerator:
         self.mine = mine
         self.tick_num = tick_num
         self.ticks = dict()
-        self.result_path = os.getcwd() + '/results'
+        self.result_path = os.path.join(os.getcwd(), 'results')
         if not os.path.exists(self.result_path):
             os.makedirs(self.result_path)
 
