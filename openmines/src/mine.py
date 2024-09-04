@@ -6,11 +6,14 @@ LoadSite(Shovel)、DumpSite(Dumper)、
 ChargingSite(Truck)，Road，Dispatcher等对象
 最后调用Mine.run()方法开始仿真
 """
+import glob
 import os
 import time
+from datetime import datetime
 
 import simpy,logging,math
 from functools import reduce
+from multiprocessing import Queue
 
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dispatcher import BaseDispatcher
@@ -23,7 +26,7 @@ from openmines.src.utils.ticker import TickGenerator
 from openmines.src.utils.event import EventPool
 
 class Mine:
-    def __init__(self, name:str, log_path=LOG_FILE_PATH, log_file_level=logging.DEBUG, log_console_level=logging.INFO):
+    def __init__(self, name:str, log_path=LOG_FILE_PATH, log_file_level=logging.DEBUG, log_console_level=logging.INFO, seed=42):
         self.env = simpy.Environment()
         self.name = name
         self.load_sites = []
@@ -111,6 +114,7 @@ class Mine:
                 "truck_unrepairable": truck_unrepairable,
                 "random_event_count":random_event_count
             }
+            self.status["cur"] = self.status[int(env.now)]
             # reset
             self.produce_tons = 0
             self.service_count = 0
@@ -332,7 +336,6 @@ class Mine:
         """
         pass
 
-
     def start(self, total_time:float=60*8)->dict:
         """
         普通策略算法的仿真入口(包括RL策略推理时)
@@ -387,7 +390,7 @@ class Mine:
         ticks = self.dump_frames(total_time=total_time)
         return ticks
 
-    def start_rl(self, total_time:float=60*8)->dict:
+    def start_rl(self, obs_queue:Queue, act_queue:Queue, total_time:float=60*8)->dict:
         """
         使用RL算法的仿真入口
         :param total_time:
@@ -402,6 +405,10 @@ class Mine:
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
         self.mine_logger.info("simulation started")
+        # pass queue to dispatcher
+        self.dispatcher.obs_queue = obs_queue
+        self.dispatcher.act_queue = act_queue
+
         # start some monitor process for summary
         for load_site in self.load_sites:
             # 对停车场队列的监控
@@ -436,10 +443,30 @@ class Mine:
         self.env.process(self.monitor_status(env=self.env))
         # log in the truck as process
         for truck in self.trucks:
-            self.env.process(truck.run(is_rl_training=True))
+            self.env.process(truck.run())
+        self.env.run(until=total_time)  # 在这里开一个独立的进程用于执行函数，后面大妈
+
+        # 当模拟结束的时候 最后发送一个ob和done等信息
+        ob = self.dispatcher.current_observation
+        info = ob["info"]
+        reward = self.dispatcher._get_reward(self)
+        done = True
+        trucated = False
+        out = {
+            "ob": ob,
+            "info": info,
+            "reward": reward,
+            "truncated": trucated,
+            "done": done
+        }
+        obs_queue.put(out, timeout=5)  # 将观察值放入队列
+        print("sim done")
+        self.mine_logger.info("simulation finished")
+        self.summary()
+        # ticks = self.dump_frames(total_time=total_time,rl=True) # todo: 开启这个
 
 
-    def dump_frames(self,total_time):
+    def dump_frames(self, total_time, rl=False):
         """使用TickGenerator记录仿真过程中的数据
         将数据写入到文件中
         :return:
@@ -451,5 +478,37 @@ class Mine:
         self.tick_generator.run()
         # 获得年月日时分秒的字符串表示
         time_str = time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())
-        ticks = self.tick_generator.write_to_file(file_name=f'MINE—{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
+        if rl:
+            # TODO: rl的tick应该默认关闭 让用户可选。
+            # 获取当前目录下所有相关的文件
+            file_pattern = f'MINE—{self.name}-EP-*.json'
+            files = glob.glob(file_pattern)
+
+            # 解析文件名中的时间戳并排序
+            episodes = []
+            for file in files:
+                try:
+                    # 假设文件名格式为 'MINE—{self.name}-EP-{episode}-TIME-{time_str}.json'
+                    parts = file.split('-')
+                    episode = int(parts[-3])
+                    file_time_str = '-'.join(parts[-2:]).split('.')[0]
+                    file_time = datetime.strptime(file_time_str, "%Y%m%d %H%M%S")
+                    episodes.append((episode, file_time))
+                except (ValueError, IndexError):
+                    continue
+
+            # 按时间戳排序
+            episodes.sort(key=lambda x: x[1])
+
+            # 推断当前回合数
+            current_episode = 1
+            if episodes:
+                current_episode = episodes[-1][0] + 1
+
+
+                ticks = self.tick_generator.write_to_file(
+                    file_name=f'MINE—{self.name}-EP-{current_episode}-TIME-{time_str}.json')
+        else:
+            ticks = self.tick_generator.write_to_file(
+                file_name=f'MINE—{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
         return ticks
