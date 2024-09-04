@@ -42,6 +42,7 @@ class DumpSite:
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
+        self.dump_site_productivity = 0
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -60,6 +61,10 @@ class DumpSite:
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
             }
+            # 统计卸载区的卸载能力
+            dump_site_productivity = sum(
+                dumper.dumper_tons / dumper.dump_time for dumper in self.dumper_list)
+            self.dump_site_productivity = dump_site_productivity
             # reset
             self.produce_tons = 0
             self.service_count = 0

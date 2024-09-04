@@ -22,6 +22,7 @@ class ParkingLot:
             # 记录当前的排队长度
             all_queue_len = sum([len(resource.queue) for resource in resources])
             self.queue_status["total"][int(env.now)] = all_queue_len
+            self.queue_status["total"]["cur_value"] = all_queue_len
             # 统计预期等待时间
             # 获取自定义请求包含的信息
             for index,res_obj in enumerate(res_objs):  # 遍历铲车或dumper对象
@@ -70,6 +71,8 @@ class ParkingLot:
         while True:
             # 记录当前的排队长度
             self.queue_status[res_name][int(env.now)] = len(resource.queue)
+            self.queue_status[res_name]["cur_value"] = len(resource.queue)
+
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
