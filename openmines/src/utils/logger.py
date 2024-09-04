@@ -26,7 +26,7 @@ class MineLogger:
         self.CONSOLE_HANDLER.setFormatter(logging.Formatter(LOG_FORMAT))
 
         # 文件处理器
-        self.log_path = log_path
+        self.log_path = Path(log_path)
         if not os.path.exists(self.log_path):
             os.makedirs(self.log_path)
         self.FILE_HANDLER = logging.FileHandler(self.log_path / f'openmines_sim_{time_str}.log')
