@@ -17,7 +17,7 @@ class MineLogger:
         LOG_FORMAT = '%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 
         # 日志级别
-        CONSOLE_LOG_LEVEL = logging.INFO
+        CONSOLE_LOG_LEVEL = console_level
         FILE_LOG_LEVEL = file_level
 
         # 控制台处理器
