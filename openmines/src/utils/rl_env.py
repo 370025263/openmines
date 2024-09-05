@@ -261,7 +261,7 @@ class MineEnv:
         self.act_queue = Queue()
         self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.config['sim_time'], self.log, self.ticks, self.seed_value))
         self.p.start()
-        print(f"Running re-simulation at pid:{self.p.pid}, env: {self.config['mine']['name']}")
+        # print(f"Running re-simulation at pid:{self.p.pid}, env: {self.config['mine']['name']}")
         # # 等待子进程结束
         # p.join()
         # 获取ob

@@ -40,7 +40,7 @@ class Mine:
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
         self.status = dict()  # the status of shovel
         # LOGGER配置
-        print(log_path)
+        # print(log_path)
         self.global_logger = MineLogger(log_path=log_path, file_level=log_file_level, console_level=log_console_level)
         self.mine_logger = self.global_logger.get_logger(name)
 
