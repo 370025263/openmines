@@ -39,7 +39,6 @@ class TickGenerator:
         if not os.path.exists(self.result_path):
             os.makedirs(self.result_path)
 
-
     def run(self):
         """
         获取矿山下每个Truck的EventPool并进行总体分析
@@ -378,7 +377,6 @@ class TickGenerator:
             "total_order_count":total_order_count,
             "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count']
         }
-
 
     def write_to_file(self, file_name):
         """

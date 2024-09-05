@@ -4,6 +4,7 @@
 不使用gym
 """
 import json
+import logging
 import pathlib
 
 import numpy as np
@@ -24,7 +25,7 @@ def load_config(filename):
     with open(filename, 'r') as file:
         return json.load(file)
 
-def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=60*8):
+def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=60*8, log:bool=False, ticks:bool=False, seed:int=42):
     """接受mp的输入，然后构建mine和子进程。
     为了兼容windows平台的spawn机制
     因为simpy的env无法序列化，所以必须在子进程中构建mine和simpy的env
@@ -39,7 +40,10 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # dispatcher
     dispatcher = RLDispatcher()
     # 初始化矿山
-    mine = Mine(config['mine']['name'], log_path=log_path)
+    mine = Mine(config['mine']['name'], log_path=log_path,
+                log_file_level=logging.DEBUG if log else logging.ERROR,
+                log_console_level=logging.INFO if log else logging.ERROR,
+                seed=seed)
     mine.add_dispatcher(dispatcher)
     # 初始化充电站和卡车
     charging_site = ChargingSite(config['charging_site']['name'], position=config['charging_site']['position'])
@@ -92,7 +96,7 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # # 添加充电站和装载区卸载区
     mine.add_road(road)
     mine.add_charging_site(charging_site)
-    mine.start_rl(obs_queue, act_queue, total_time)  # 子进程的任务
+    mine.start_rl(obs_queue, act_queue, total_time, ticks=ticks)  # 子进程的任务
 
 
 class ActionSpace:
@@ -170,10 +174,13 @@ class ActionSpace:
 
 
 class MineEnv:
-    def __init__(self,seed_value=42):
+    def __init__(self, seed_value: int=42, log: bool = False, ticks:bool=False):
         """按照参数初始化矿山
         """
         self.seed_value = seed_value
+        self.log = log
+        self.ticks = ticks
+
         self.config_file = None
         self.cur_ob = None
         self.action_space = ActionSpace(seed=seed_value)
@@ -204,7 +211,7 @@ class MineEnv:
         return observation, reward, done, truncated, info
 
     @staticmethod
-    def make(config_file,seed_value=42):
+    def make(config_file, seed_value=42, log: bool = False, ticks:bool=False):
         """通过读取配置文件，返回一个MineRL环境
         :return:
         """
@@ -212,14 +219,16 @@ class MineEnv:
         env = MineEnv(seed_value=seed_value)
         env.config_file = config_file
         env.config = load_config(config_file)
+        env.log = log
+        env.ticks = ticks
+
         # 开始实验
         # 下面开启一个env的子进程
         env.obs_queue = Queue()
         env.act_queue = Queue()
-        env.p = multiprocessing.Process(target=prepare_env, args=(env.obs_queue, env.act_queue, env.config, env.config[
-            'sim_time']))  # 这里self.mine.start应该单独启动一个进程。和env主进程间使用队列通讯(ob,act等)。注意兼容多个env，防止信息穿台。
+        env.p = multiprocessing.Process(target=prepare_env, args=(env.obs_queue, env.act_queue, env.config, env.config['sim_time'], env.log, env.ticks, seed_value))
         env.p.start()
-        print(f"Running re-simulation at pid:{env.p.pid}, env: {env.config['mine']['name']}")
+        #print(f"Running re-simulation at pid:{env.p.pid}, env: {env.config['mine']['name']}")
 
         # # 等待子进程结束
         # p.join()
@@ -239,17 +248,18 @@ class MineEnv:
         """重制环境生成观察空间,矿车INFO"""
         # 触发reset的时候，需要停止之前的进程
         if self.p.is_alive():
-            print(f"Terminating previous simulation with pid: {self.p.pid}")
+            #print(f"Terminating previous simulation with pid: {self.p.pid}")
             self.p.terminate()
             self.p.join()  # 确保子进程结束
 
         # 开始实验
         self.seed_value = seed
+
         # todo: ticks功能在RL环境中也可以使用【暂时不做】
         # 下面开启一个env的子进程
         self.obs_queue = Queue()
         self.act_queue = Queue()
-        self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.config['sim_time']))# 这里self.mine.start应该单独启动一个进程。和env主进程间使用队列通讯(ob,act等)。注意兼容多个env，防止信息穿台。
+        self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.config['sim_time'], self.log, self.ticks, self.seed_value))
         self.p.start()
         print(f"Running re-simulation at pid:{self.p.pid}, env: {self.config['mine']['name']}")
         # # 等待子进程结束

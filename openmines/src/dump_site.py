@@ -54,9 +54,8 @@ class DumpSite:
         """
         while True:
             # 获取每个dumper信息并统计
-            for dumper in self.dumper_list:
-                self.produce_tons += dumper.dumper_tons
-                self.service_count += dumper.service_count
+            self.produce_tons = sum(dumper.dumper_tons for dumper in self.dumper_list)
+            self.service_count = sum(dumper.service_count for dumper in self.dumper_list)
             self.status[int(env.now)] = {
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
@@ -65,9 +64,6 @@ class DumpSite:
             dump_site_productivity = sum(
                 dumper.dumper_tons / dumper.dump_time for dumper in self.dumper_list)
             self.dump_site_productivity = dump_site_productivity
-            # reset
-            self.produce_tons = 0
-            self.service_count = 0
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
@@ -93,7 +89,6 @@ class DumpSite:
             name = f'{self.name}_parking_lot'
         park_position = tuple(a + b for a, b in zip(self.position, position_offset))
         self.parking_lot = ParkingLot(name=name, position=park_position)
-
 
     def get_available_dumper(self)->Dumper:
         """
