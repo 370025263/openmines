@@ -18,6 +18,7 @@ os.environ['PYTHONWARNINGS'] = 'ignore'
 
 # 设置设备
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+print(f"Using device: {device}")
 
 
 # 特征预处理函数
@@ -148,50 +149,57 @@ class PPOAgent:
 def train(env, agent, num_episodes, max_steps):
     writer = SummaryWriter()
 
-    for episode in tqdm(range(num_episodes)):
-        observation, info = env.reset()
-        state = preprocess_features(observation)
-        episode_reward = 0
+    with tqdm(total=num_episodes, desc="Episodes", unit="ep") as pbar:
+        for episode in range(num_episodes):
+            observation, info = env.reset()
+            state = preprocess_features(observation)
+            episode_reward = 0
 
-        for step in range(max_steps):
-            action, log_prob = agent.act(state)
-            next_observation, reward, done, truncated, info = env.step(action)
-            next_state = preprocess_features(next_observation)
-            episode_reward += reward
+            for step in range(max_steps):
+                action, log_prob = agent.act(state)
+                next_observation, reward, done, truncated, info = env.step(action)
+                next_state = preprocess_features(next_observation)
+                episode_reward += reward
 
-            agent.update([state], [action], [log_prob], [reward], [next_state], [done or truncated])
+                agent.update([state], [action], [log_prob], [reward], [next_state], [done or truncated])
 
-            if done or truncated:
-                break
+                if done or truncated:
+                    break
 
-            state = next_state
+                state = next_state
 
-        writer.add_scalar('Reward', episode_reward, episode)
-
-        if episode % 10 == 0:
-            print(f"Episode {episode}, Reward: {episode_reward}")
+            writer.add_scalar('Reward', episode_reward, episode)
+            pbar.update(1)
+            pbar.set_postfix({'Reward': f'{episode_reward:.2f}'})
 
     writer.close()
 
 
 # 多进程训练函数
-def train_worker(rank, num_episodes, max_steps):
+def train_worker(rank, num_episodes, max_steps, return_dict):
     env = MineEnv.make("../../openmines/src/conf/north_pit_mine.json", log=False, ticks=False)
     env.reset(seed=42 + rank)  # 每个进程使用不同的种子
     agent = PPOAgent(input_dim=85, output_dim=5)  # 根据你的环境调整输入和输出维度
-    train(env, agent, num_episodes // mp.cpu_count(), max_steps)
+    train(env, agent, num_episodes, max_steps)
+    return_dict[rank] = "Completed"
 
 
 if __name__ == "__main__":
     num_episodes = 1000
     max_steps = 1000
-    num_processes = mp.cpu_count()
+    num_processes = min(4, mp.cpu_count())  # 限制进程数量
+
+    manager = mp.Manager()
+    return_dict = manager.dict()
 
     processes = []
     for rank in range(num_processes):
-        p = mp.Process(target=train_worker, args=(rank, num_episodes, max_steps))
+        p = mp.Process(target=train_worker, args=(rank, num_episodes // num_processes, max_steps, return_dict))
         p.start()
         processes.append(p)
 
     for p in processes:
         p.join()
+
+    print("All processes completed.")
+    print(return_dict)
