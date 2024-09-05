@@ -53,11 +53,8 @@ class Mine:
             1.监控卸载区的产量、服务次数等信息
             """
             # 获取每个dumper信息并统计
-            for dump_site in self.dump_sites:
-                # 获取每个dumper信息并统计
-                for dumper in dump_site.dumper_list:
-                    self.produce_tons += dumper.dumper_tons
-                    self.service_count += dumper.service_count
+            self.produce_tons = sum([dump_site.produce_tons for dump_site in self.dump_sites])
+            self.service_count = sum([dump_site.service_count for dump_site in self.dump_sites])
             # 获取卡车整体的统计信息
             working_truck_count = 0
             waiting_truck_count = 0
@@ -115,9 +112,6 @@ class Mine:
                 "random_event_count":random_event_count
             }
             self.status["cur"] = self.status[int(env.now)]
-            # reset
-            self.produce_tons = 0
-            self.service_count = 0
             """
             2.监控道路的状态
             """
@@ -323,7 +317,6 @@ class Mine:
                     return dumper
         return None
 
-
     def summary(self):
         """在仿真结束后，统计各个装载区和卸载区的产量、MatchingFactor等并记录在文件中
         目前统计的对象：
@@ -390,7 +383,7 @@ class Mine:
         ticks = self.dump_frames(total_time=total_time)
         return ticks
 
-    def start_rl(self, obs_queue:Queue, act_queue:Queue, total_time:float=60*8)->dict:
+    def start_rl(self, obs_queue:Queue, act_queue:Queue, total_time:float=60*8, ticks:bool=False)->dict:
         """
         使用RL算法的仿真入口
         :param total_time:
@@ -459,12 +452,11 @@ class Mine:
             "truncated": trucated,
             "done": done
         }
-        obs_queue.put(out, timeout=5)  # 将观察值放入队列
-        print("sim done")
         self.mine_logger.info("simulation finished")
         self.summary()
-        # ticks = self.dump_frames(total_time=total_time,rl=True) # todo: 开启这个
-
+        if ticks:
+            self.dump_frames(total_time=total_time, rl=True)
+        obs_queue.put(out, timeout=5)  # 将观察值放入队列
 
     def dump_frames(self, total_time, rl=False):
         """使用TickGenerator记录仿真过程中的数据
@@ -474,14 +466,21 @@ class Mine:
         # tick generator
         self.tick_generator = TickGenerator(mine=self, tick_num=total_time)
         assert self.tick_generator is not None, "tick_generator can not be None"
+
         print("dumping frames...")
         self.tick_generator.run()
+
         # 获得年月日时分秒的字符串表示
         time_str = time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())
+
         if rl:
-            # TODO: rl的tick应该默认关闭 让用户可选。
-            # 获取当前目录下所有相关的文件
-            file_pattern = f'MINE—{self.name}-EP-*.json'
+            # 使用指定的TickGenerator.result_path作为文件保存路径
+            result_path = self.tick_generator.result_path
+            if not os.path.exists(result_path):
+                os.makedirs(result_path)  # 如果路径不存在，则创建
+
+            # 查找当前目录下所有相关的文件，使用绝对路径进行查找
+            file_pattern = os.path.join(result_path, f'MINE-{self.name}-EP-*.json')
             files = glob.glob(file_pattern)
 
             # 解析文件名中的时间戳并排序
@@ -489,26 +488,27 @@ class Mine:
             for file in files:
                 try:
                     # 假设文件名格式为 'MINE—{self.name}-EP-{episode}-TIME-{time_str}.json'
-                    parts = file.split('-')
-                    episode = int(parts[-3])
-                    file_time_str = '-'.join(parts[-2:]).split('.')[0]
-                    file_time = datetime.strptime(file_time_str, "%Y%m%d %H%M%S")
+                    filename = os.path.basename(file)  # 只解析文件名部分
+                    parts = filename.split('-')
+                    episode = int(parts[3])  # 提取回合数
+                    file_time_str = '-'.join(parts[-5:]).split('.')[0]  # 提取时间戳
+                    file_time = datetime.strptime(file_time_str, "%Y-%m-%d %H-%M-%S")
                     episodes.append((episode, file_time))
                 except (ValueError, IndexError):
-                    continue
+                    continue  # 文件名格式不正确，跳过
 
-            # 按时间戳排序
-            episodes.sort(key=lambda x: x[1])
-
-            # 推断当前回合数
+            # 按时间戳排序并推断当前回合数
             current_episode = 1
             if episodes:
+                episodes.sort(key=lambda x: x[1])
                 current_episode = episodes[-1][0] + 1
 
-
-                ticks = self.tick_generator.write_to_file(
-                    file_name=f'MINE—{self.name}-EP-{current_episode}-TIME-{time_str}.json')
-        else:
+            # 写入RL仿真数据文件
             ticks = self.tick_generator.write_to_file(
-                file_name=f'MINE—{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
+                file_name=f'MINE-{self.name}-EP-{current_episode}-TIME-{time_str}.json')
+        else:
+            # 非RL部分代码保持不变
+            ticks = self.tick_generator.write_to_file(
+                file_name=f'MINE-{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
+
         return ticks
