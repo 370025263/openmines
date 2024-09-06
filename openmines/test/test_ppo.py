@@ -17,7 +17,6 @@ from datetime import datetime
 
 # Disable warnings to speed up execution
 import warnings
-
 warnings.filterwarnings('ignore')
 
 # Import your environment
@@ -37,34 +36,30 @@ NUM_PROCESSES = 7
 NUM_UPDATES = 1000
 MAX_GRAD_NORM = 0.5
 
-
 # Function to generate a unique run identifier
 def generate_run_id():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     random_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"{timestamp}_{random_string}"
 
-
 # Function to generate a unique color for the run
 def generate_run_color():
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-
 # Neural network model
 class ActorCritic(nn.Module):
-    def __init__(self, state_dim, action_dim):
+    def __init__(self, state_dim, action_dims):
         super(ActorCritic, self).__init__()
-        self.actor = nn.Sequential(
+        self.encoder = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.Tanh(),
             nn.Linear(64, 64),
-            nn.Tanh(),
-            nn.Linear(64, action_dim),
-            nn.Softmax(dim=-1)
+            nn.Tanh()
         )
+        self.actor_heads = nn.ModuleList([
+            nn.Linear(64, dim) for dim in action_dims
+        ])
         self.critic = nn.Sequential(
-            nn.Linear(state_dim, 64),
-            nn.Tanh(),
             nn.Linear(64, 64),
             nn.Tanh(),
             nn.Linear(64, 1)
@@ -73,20 +68,23 @@ class ActorCritic(nn.Module):
     def forward(self):
         raise NotImplementedError
 
-    def act(self, state):
-        action_probs = self.actor(state)
+    def act(self, state, event_type):
+        encoded_state = self.encoder(state)
+        action_probs = self.actor_heads[event_type](encoded_state)
+        action_probs = nn.functional.softmax(action_probs, dim=-1)
         dist = Categorical(action_probs)
         action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(state)
+        return action, dist.log_prob(action), dist.entropy(), self.critic(encoded_state)
 
-    def evaluate(self, state, action):
-        action_probs = self.actor(state)
+    def evaluate(self, state, action, event_type):
+        encoded_state = self.encoder(state)
+        action_probs = self.actor_heads[event_type](encoded_state)
+        action_probs = nn.functional.softmax(action_probs, dim=-1)
         dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        state_values = self.critic(state)
+        state_values = self.critic(encoded_state)
         return action_logprobs, state_values, dist_entropy
-
 
 # Memory class to handle variable-length episodes
 class Memory:
@@ -97,6 +95,7 @@ class Memory:
         self.rewards = []
         self.is_terminals = []
         self.values = []
+        self.event_types = []
 
     def clear_memory(self):
         del self.states[:]
@@ -105,6 +104,7 @@ class Memory:
         del self.rewards[:]
         del self.is_terminals[:]
         del self.values[:]
+        del self.event_types[:]
 
     def compute_gae(self, next_value):
         values = self.values + [next_value]
@@ -123,17 +123,17 @@ class Memory:
         values = torch.stack(self.values).squeeze(-1)
         returns = torch.tensor(self.compute_gae(values[-1].item()))
         advantages = returns - values
+        event_types = torch.tensor(self.event_types)
 
-        return states, actions, log_probs, returns, advantages
-
+        return states, actions, log_probs, returns, advantages, event_types
 
 # PPO algorithm
 class PPO:
-    def __init__(self, state_dim, action_dim, device):
+    def __init__(self, state_dim, action_dims, device):
         self.device = device
-        self.policy = ActorCritic(state_dim, action_dim).to(device)
+        self.policy = ActorCritic(state_dim, action_dims).to(device)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
-        self.policy_old = ActorCritic(state_dim, action_dim).to(device)
+        self.policy_old = ActorCritic(state_dim, action_dims).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
     def update(self, memories):
@@ -142,20 +142,23 @@ class PPO:
         all_log_probs = []
         all_returns = []
         all_advantages = []
+        all_event_types = []
 
         for memory in memories:
-            states, actions, log_probs, returns, advantages = memory.get()
+            states, actions, log_probs, returns, advantages, event_types = memory.get()
             all_states.extend(states)
             all_actions.extend(actions)
             all_log_probs.extend(log_probs)
             all_returns.extend(returns)
             all_advantages.extend(advantages)
+            all_event_types.extend(event_types)
 
         all_states = torch.stack(all_states).to(self.device)
         all_actions = torch.stack(all_actions).to(self.device)
         all_log_probs = torch.stack(all_log_probs).to(self.device)
         all_returns = torch.stack(all_returns).to(self.device)
         all_advantages = torch.stack(all_advantages).to(self.device)
+        all_event_types = torch.stack(all_event_types).to(self.device)
 
         # Normalize advantages
         all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
@@ -167,8 +170,9 @@ class PPO:
                 old_log_probs = all_log_probs[index:index + BATCH_SIZE]
                 returns = all_returns[index:index + BATCH_SIZE]
                 advantages = all_advantages[index:index + BATCH_SIZE]
+                event_types = all_event_types[index:index + BATCH_SIZE]
 
-                new_log_probs, state_values, dist_entropy = self.policy.evaluate(states, actions)
+                new_log_probs, state_values, dist_entropy = self.policy.evaluate(states, actions, event_types)
 
                 ratio = torch.exp(new_log_probs - old_log_probs)
 
@@ -190,47 +194,79 @@ class PPO:
 
 # Feature preprocessing function
 def preprocess_features(observation):
+    event_name = observation['event_name']
+    if event_name == "init":
+        event_type = 0
+        action_space_n = observation['info']['load_num']
+    elif event_name == "haul":
+        event_type = 1
+        action_space_n = observation['info']['unload_num']
+    else:
+        event_type = 2
+        action_space_n = observation['info']['load_num']
+
+    truck_location = observation['the_truck_status']['truck_location_index']
+    if truck_location is None:
+        truck_location = 0
+
+    order_and_position = np.array([event_type, truck_location, action_space_n])
+
+    truck_num = observation['mine_status']['truck_count']
+
     truck_features = np.array([
         observation['the_truck_status']['truck_load'] / observation['the_truck_status']['truck_capacity'],
         observation['the_truck_status']['truck_speed'] / 100,
         observation['the_truck_status']['truck_cycle_time'] / 1000
     ])
 
-    road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / 10,
+    init_road_features = np.concatenate([
+        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / truck_num,
         np.array(list(observation['cur_road_status']['charging2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / 5,
-        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / 5,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / truck_num,
+    ])
+
+    haul_road_features = np.concatenate([
+        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['distances'].values())) / 10,
+        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / truck_num,
+    ])
+
+    unhaul_road_features = np.concatenate([
+        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['distances'].values())) / 10,
+        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / truck_num,
     ])
 
     target_features = np.concatenate([
-        np.array(observation['target_status']['queue_lengths']) / 10,
-        np.array(observation['target_status']['capacities']) / 1000,
-        np.array(observation['target_status']['est_wait']) / 100,
-        np.array(observation['target_status']['produced_tons']) / 1000,
-        np.array(observation['target_status']['service_counts']) / 100,
+        np.array(observation['target_status']['queue_lengths']) / truck_num,
+        np.array(np.log(observation['target_status']['capacities'])),
+        np.array(np.log(observation['target_status']['est_wait'])),
+        np.array(np.log(observation['target_status']['produced_tons'])),
+        np.array(np.log(observation['target_status']['service_counts'])),
     ])
 
-    state = np.concatenate([truck_features, road_features, target_features])
+    state = np.concatenate([order_and_position, truck_features, init_road_features, haul_road_features, unhaul_road_features, target_features])
 
-    return state
-
+    return state, event_type
 
 # Worker function for collecting trajectories
 def collect_trajectory(env_config, policy, device, process_id, trajectory_queue):
     env = MineEnv.make(env_config, log=False, ticks=False)
     memory = Memory()
 
-    observation, _ = env.reset(seed=int(time.time() + process_id))  # Use different seeds for each process
-    state = preprocess_features(observation)
+    observation, _ = env.reset(seed=int(time.time() + process_id))
+    state, event_type = preprocess_features(observation)
     episode_reward = 0
     for step in range(MAX_STEPS):
         state_tensor = torch.FloatTensor(state).to(device)
         with torch.no_grad():
-            action, log_prob, _, value = policy.act(state_tensor)
+            action, log_prob, _, value = policy.act(state_tensor, event_type)
 
         observation, reward, done, truncated, _ = env.step(action.item())
-        next_state = preprocess_features(observation)
+        next_state, next_event_type = preprocess_features(observation)
 
         memory.states.append(state_tensor.detach().cpu())
         memory.actions.append(action.detach().cpu())
@@ -238,16 +274,17 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
         memory.rewards.append(reward)
         memory.is_terminals.append(done)
         memory.values.append(value.detach().cpu())
+        memory.event_types.append(event_type)
 
         state = next_state
+        event_type = next_event_type
         episode_reward += reward
 
         if done or truncated:
             break
 
-    trajectory_queue.put((memory, episode_reward, step + 1))  # Return the number of steps taken
+    trajectory_queue.put((memory, episode_reward, step + 1))
     env.close()
-
 
 # Main function
 def main(args):
@@ -278,13 +315,17 @@ def main(args):
 
     env = MineEnv.make(args.env_config, log=False, ticks=False)
     observation, _ = env.reset(seed=42)
-    state = preprocess_features(observation)
+    state, _ = preprocess_features(observation)
     state_dim = len(state)
-    action_dim = len(observation['target_status']['queue_lengths'])
+    action_dims = [
+        observation['info']['load_num'],  # for init
+        observation['info']['unload_num'],  # for haul
+        observation['info']['load_num']  # for unhaul
+    ]
     env.close()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    ppo_agent = PPO(state_dim, action_dim, device)
+    ppo_agent = PPO(state_dim, action_dims, device)
 
     writer = SummaryWriter(log_dir)
 
@@ -342,3 +383,4 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
+

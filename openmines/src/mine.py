@@ -101,6 +101,7 @@ class Mine:
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
                 # stats
+                "truck_count": len(self.trucks),
                 "working_truck_count": working_truck_count,
                 "waiting_truck_count": waiting_truck_count,
                 "load_unload_truck_count": load_unload_truck_count,

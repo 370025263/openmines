@@ -139,6 +139,7 @@ class RLDispatcher(BaseDispatcher):
         # 当前车的状态
         the_truck_status = {
             "truck_location": truck.current_location.name,
+            "truck_location_index": truck.get_location_index(truck.current_location),
 
             "truck_load": truck.truck_load,
             "truck_capacity": truck.truck_capacity,
