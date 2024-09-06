@@ -9,9 +9,15 @@ from torch.distributions import Categorical
 from torch.utils.tensorboard import SummaryWriter
 import torch.multiprocessing as mp
 from tqdm import tqdm
+import random
+import string
+import json
+import argparse
+from datetime import datetime
 
 # Disable warnings to speed up execution
 import warnings
+
 warnings.filterwarnings('ignore')
 
 # Import your environment
@@ -26,10 +32,23 @@ ENTROPY_BETA = 0.01
 LEARNING_RATE = 3e-4
 PPO_EPOCHS = 10
 BATCH_SIZE = 64
-NUM_STEPS = 240  # Steps per episode
-NUM_PROCESSES = 8
+MAX_STEPS = 1000  # Maximum number of steps per episode
+NUM_PROCESSES = 7
 NUM_UPDATES = 1000
 MAX_GRAD_NORM = 0.5
+
+
+# Function to generate a unique run identifier
+def generate_run_id():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"{timestamp}_{random_string}"
+
+
+# Function to generate a unique color for the run
+def generate_run_color():
+    return "#{:06x}".format(random.randint(0, 0xFFFFFF))
+
 
 # Neural network model
 class ActorCritic(nn.Module):
@@ -68,7 +87,8 @@ class ActorCritic(nn.Module):
         state_values = self.critic(state)
         return action_logprobs, state_values, dist_entropy
 
-# Memory class
+
+# Memory class to handle variable-length episodes
 class Memory:
     def __init__(self):
         self.states = []
@@ -106,12 +126,14 @@ class Memory:
 
         return states, actions, log_probs, returns, advantages
 
+
 # PPO algorithm
 class PPO:
-    def __init__(self, state_dim, action_dim):
-        self.policy = ActorCritic(state_dim, action_dim)
+    def __init__(self, state_dim, action_dim, device):
+        self.device = device
+        self.policy = ActorCritic(state_dim, action_dim).to(device)
         self.optimizer = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
-        self.policy_old = ActorCritic(state_dim, action_dim)
+        self.policy_old = ActorCritic(state_dim, action_dim).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
 
     def update(self, memories):
@@ -129,11 +151,11 @@ class PPO:
             all_returns.extend(returns)
             all_advantages.extend(advantages)
 
-        all_states = torch.stack(all_states)
-        all_actions = torch.stack(all_actions)
-        all_log_probs = torch.stack(all_log_probs)
-        all_returns = torch.stack(all_returns)
-        all_advantages = torch.stack(all_advantages)
+        all_states = torch.stack(all_states).to(self.device)
+        all_actions = torch.stack(all_actions).to(self.device)
+        all_log_probs = torch.stack(all_log_probs).to(self.device)
+        all_returns = torch.stack(all_returns).to(self.device)
+        all_advantages = torch.stack(all_advantages).to(self.device)
 
         # Normalize advantages
         all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
@@ -195,27 +217,27 @@ def preprocess_features(observation):
 
 
 # Worker function for collecting trajectories
-def collect_trajectory(env_config, policy, process_id, trajectory_queue):
+def collect_trajectory(env_config, policy, device, process_id, trajectory_queue):
     env = MineEnv.make(env_config, log=False, ticks=False)
     memory = Memory()
 
     observation, _ = env.reset(seed=int(time.time() + process_id))  # Use different seeds for each process
     state = preprocess_features(observation)
     episode_reward = 0
-
-    for _ in range(NUM_STEPS):
-        state_tensor = torch.FloatTensor(state)
-        action, log_prob, _, value = policy.act(state_tensor)
+    for step in range(MAX_STEPS):
+        state_tensor = torch.FloatTensor(state).to(device)
+        with torch.no_grad():
+            action, log_prob, _, value = policy.act(state_tensor)
 
         observation, reward, done, truncated, _ = env.step(action.item())
         next_state = preprocess_features(observation)
 
-        memory.states.append(state_tensor.detach())
-        memory.actions.append(action.detach())
-        memory.log_probs.append(log_prob.detach())
+        memory.states.append(state_tensor.detach().cpu())
+        memory.actions.append(action.detach().cpu())
+        memory.log_probs.append(log_prob.detach().cpu())
         memory.rewards.append(reward)
         memory.is_terminals.append(done)
-        memory.values.append(value.detach())
+        memory.values.append(value.detach().cpu())
 
         state = next_state
         episode_reward += reward
@@ -223,65 +245,100 @@ def collect_trajectory(env_config, policy, process_id, trajectory_queue):
         if done or truncated:
             break
 
-    trajectory_queue.put((memory, episode_reward))
+    trajectory_queue.put((memory, episode_reward, step + 1))  # Return the number of steps taken
     env.close()
 
 
 # Main function
-def main():
-    env_config = "../../openmines/src/conf/north_pit_mine.json"
-    env = MineEnv.make(env_config, log=False, ticks=False)
+def main(args):
+    run_id = generate_run_id()
+    run_color = generate_run_color()
+
+    log_dir = os.path.join("runs", run_id)
+    os.makedirs(log_dir, exist_ok=True)
+
+    # Save run configuration
+    config = {
+        "run_id": run_id,
+        "run_color": run_color,
+        "env_config": args.env_config,
+        "num_updates": args.num_updates,
+        "num_processes": args.num_processes,
+        "max_steps": args.max_steps,
+        "learning_rate": LEARNING_RATE,
+        "gamma": GAMMA,
+        "gae_lambda": GAE_LAMBDA,
+        "clip_epsilon": CLIP_EPSILON,
+        "ppo_epochs": PPO_EPOCHS,
+        "batch_size": BATCH_SIZE,
+    }
+
+    with open(os.path.join(log_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=4)
+
+    env = MineEnv.make(args.env_config, log=False, ticks=False)
     observation, _ = env.reset(seed=42)
     state = preprocess_features(observation)
     state_dim = len(state)
     action_dim = len(observation['target_status']['queue_lengths'])
     env.close()
 
-    ppo_agent = PPO(state_dim, action_dim)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    ppo_agent = PPO(state_dim, action_dim, device)
 
-    if torch.cuda.is_available():
-        ppo_agent.policy.cuda()
-        ppo_agent.policy_old.cuda()
-        try:
-            mp.set_start_method('spawn')
-        except RuntimeError:
-            pass
+    writer = SummaryWriter(log_dir)
 
-    writer = SummaryWriter('runs/mining_ppo_experiment')
-
+    mp.set_start_method('spawn', force=True)
     manager = mp.Manager()
     trajectory_queue = manager.Queue()
 
-    total_progress = tqdm(total=NUM_UPDATES, desc='Training Progress')
+    total_progress = tqdm(total=args.num_updates, desc=f'Training Progress (Run ID: {run_id})')
 
-    for update in range(NUM_UPDATES):
+    for update in range(args.num_updates):
         processes = []
-        for i in range(NUM_PROCESSES):
-            p = mp.Process(target=collect_trajectory, args=(env_config, ppo_agent.policy_old, i, trajectory_queue))
+        for i in range(args.num_processes):
+            p = mp.Process(target=collect_trajectory,
+                           args=(args.env_config, ppo_agent.policy_old, device, i, trajectory_queue))
             p.start()
             processes.append(p)
 
         memories = []
         episode_rewards = []
-        for _ in range(NUM_PROCESSES):
-            memory, episode_reward = trajectory_queue.get()
-            memories.append(memory)
-            episode_rewards.append(episode_reward)
-
+        episode_lengths = []
         for p in processes:
             p.join()
 
+        for _ in range(args.num_processes):
+            memory, episode_reward, episode_length = trajectory_queue.get()
+            memories.append(memory)
+            episode_rewards.append(episode_reward)
+            episode_lengths.append(episode_length)
+
         ppo_agent.update(memories)
 
-        avg_reward = sum(episode_rewards) / NUM_PROCESSES
+        avg_reward = sum(episode_rewards) / args.num_processes
+        avg_length = sum(episode_lengths) / args.num_processes
         writer.add_scalar('Average Reward', avg_reward, update)
+        writer.add_scalar('Average Episode Length', avg_length, update)
 
         total_progress.update(1)
-        total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}'})
+        total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}', 'Avg Length': f'{avg_length:.2f}'})
 
     total_progress.close()
     writer.close()
-    print("\nTraining completed.")
+    print(f"\nTraining completed. Run ID: {run_id}, Color: {run_color}")
+
+    # Save the final model
+    torch.save(ppo_agent.policy.state_dict(), os.path.join(log_dir, "final_model.pth"))
+
 
 if __name__ == '__main__':
-    main()
+    parser = argparse.ArgumentParser(description="PPO Mining Environment Trainer")
+    parser.add_argument("--env_config", type=str, default="../../openmines/src/conf/north_pit_mine.json",
+                        help="Path to environment configuration file")
+    parser.add_argument("--num_updates", type=int, default=NUM_UPDATES, help="Number of updates to perform")
+    parser.add_argument("--num_processes", type=int, default=NUM_PROCESSES, help="Number of parallel processes to use")
+    parser.add_argument("--max_steps", type=int, default=MAX_STEPS, help="Maximum number of steps per episode")
+    args = parser.parse_args()
+
+    main(args)
