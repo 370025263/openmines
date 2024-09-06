@@ -78,22 +78,22 @@ class Truck:
         # RL
         self.current_decision_event = None
 
-    def get_location_index(self, mine:"Mine"):
+    def get_location_index(self):
         """获取车辆当前地点的标号
         """
         if isinstance(self.current_location, DumpSite) and isinstance(self.target_location, LoadSite):
             event_name = "unhaul"
-            for i, load_site in enumerate(mine.load_sites):
+            for i, load_site in enumerate(self.mine.load_sites):
                 if load_site.name == self.current_location:
                     return i
         elif isinstance(self.current_location, ChargingSite):
             event_name = "init"
-            for i, load_site in enumerate(mine.load_sites):
+            for i, load_site in enumerate(self.mine.load_sites):
                 if load_site.name == self.current_location:
                     return i
         else:
             event_name = "haul"
-            for i, load_site in enumerate(mine.dump_sites):
+            for i, load_site in enumerate(self.mine.dump_sites):
                 if load_site.name == self.current_location:
                     return i
         return None
