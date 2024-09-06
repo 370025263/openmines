@@ -72,14 +72,34 @@ class ActorCritic(nn.Module):
         encoded_state = self.encoder(state)
         action_probs = self.actor_heads[event_type](encoded_state)
         action_probs = nn.functional.softmax(action_probs, dim=-1)
+        assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action = dist.sample()
         return action, dist.log_prob(action), dist.entropy(), self.critic(encoded_state)
 
+    # def evaluate(self, state, action, event_type):
+    #     encoded_state = self.encoder(state)
+    #     # Convert event_type to integer if it's a tensor
+    #     if isinstance(event_type, torch.Tensor):
+    #         event_type = event_type.long()
+    #     action_probs = self.actor_heads[event_type](encoded_state)
+    #     action_probs = nn.functional.softmax(action_probs, dim=-1)
+    #     assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
+    #     dist = Categorical(action_probs)
+    #     action_logprobs = dist.log_prob(action)
+    #     dist_entropy = dist.entropy()
+    #     state_values = self.critic(encoded_state)
+    #     return action_logprobs, state_values, dist_entropy
+    
     def evaluate(self, state, action, event_type):
         encoded_state = self.encoder(state)
-        action_probs = self.actor_heads[event_type](encoded_state)
+        # Handle batched and non-batched inputs
+        if event_type.dim() > 0:
+            action_probs = torch.stack([self.actor_heads[et.item()](es) for et, es in zip(event_type, encoded_state)])
+        else:
+            action_probs = self.actor_heads[event_type.item()](encoded_state)
         action_probs = nn.functional.softmax(action_probs, dim=-1)
+        assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
@@ -123,7 +143,7 @@ class Memory:
         values = torch.stack(self.values).squeeze(-1)
         returns = torch.tensor(self.compute_gae(values[-1].item()))
         advantages = returns - values
-        event_types = torch.tensor(self.event_types)
+        event_types = torch.tensor(self.event_types, dtype=torch.long)
 
         return states, actions, log_probs, returns, advantages, event_types
 
@@ -214,41 +234,43 @@ def preprocess_features(observation):
     truck_num = observation['mine_status']['truck_count']
 
     truck_features = np.array([
-        observation['the_truck_status']['truck_load'] / observation['the_truck_status']['truck_capacity'],
+        observation['the_truck_status']['truck_load'] / (observation['the_truck_status']['truck_capacity'] + 1e-8),
         observation['the_truck_status']['truck_speed'] / 100,
         observation['the_truck_status']['truck_cycle_time'] / 1000
     ])
 
     init_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['charging2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     haul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['load2dump']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     unhaul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['dump2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     target_features = np.concatenate([
-        np.array(observation['target_status']['queue_lengths']) / truck_num,
-        np.array(np.log(observation['target_status']['capacities'])),
-        np.array(np.log(observation['target_status']['est_wait'])),
-        np.array(np.log(observation['target_status']['produced_tons'])),
-        np.array(np.log(observation['target_status']['service_counts'])),
+        np.array(observation['target_status']['queue_lengths']) / (truck_num + 1e-8),
+        np.log(np.array(observation['target_status']['capacities']) + 1),
+        np.log(np.array(observation['target_status']['est_wait']) + 1),
+        np.log(np.array(observation['target_status']['produced_tons']) + 1),
+        np.log(np.array(observation['target_status']['service_counts']) + 1),
     ])
 
     state = np.concatenate([order_and_position, truck_features, init_road_features, haul_road_features, unhaul_road_features, target_features])
+
+    assert not np.isnan(state).any(), f"NaN detected in state: {state}"
 
     return state, event_type
 
@@ -355,6 +377,8 @@ def main(args):
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
 
+        assert len(memories) > 0, "No trajectories collected"
+
         ppo_agent.update(memories)
 
         avg_reward = sum(episode_rewards) / args.num_processes
@@ -383,4 +407,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
-
