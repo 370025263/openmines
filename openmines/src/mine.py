@@ -35,6 +35,8 @@ class Mine:
         self.road = None
         self.dispatcher = None
         self.random_event_pool = EventPool()  # 随机事件池
+        # rl
+        self.done = False
         # summary
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
@@ -444,6 +446,7 @@ class Mine:
         info = ob["info"]
         reward = self.dispatcher._get_reward(self)
         done = True
+        self.env.done = done
         trucated = False
         out = {
             "ob": ob,

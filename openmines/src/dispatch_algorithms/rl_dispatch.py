@@ -2,6 +2,9 @@
 """
 负责RL算法和矿山环境之间的API交互
 """
+import time
+from queue import Empty, Full
+
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dispatcher import BaseDispatcher
 from openmines.src.dump_site import DumpSite
@@ -27,21 +30,57 @@ class RLDispatcher(BaseDispatcher):
 
     def _step(self, truck: Truck, mine: Mine) -> int:
         """完成队列交互"""
-        self.current_observation = self._get_observation(truck, mine)
-        info = self.current_observation["info"]
-        reward = self._get_reward(mine)
-        done = self._get_done(mine)
-        trucated = False
-        out = {
-            "ob": self.current_observation,
-            "info": info,
-            "reward": reward,
-            "truncated": trucated,
-            "done": done
-        }
-        self.obs_queue.put(out, timeout=5)  # 将观察值放入队列
-        action = self.act_queue.get(timeout=5)  # 从队列中获取动作
-        return action
+        start_time = time.time()
+        timeout = 30  # 设置总超时时间为10秒
+        try:
+            # 断点 1: 获取观察值之前
+            self.current_observation = self._get_observation(truck, mine)
+            info = self.current_observation["info"]
+            reward = self._get_reward(mine)
+            done = self._get_done(mine)
+            truncated = False
+            out = {
+                "ob": self.current_observation,
+                "info": info,
+                "reward": reward,
+                "truncated": truncated,
+                "done": done
+            }
+
+            # 断点 2: 将观察值放入队列之前
+            try:
+                mine.mine_logger.debug(f"PUTTING {truck.name} at {mine.env.now}")
+                self.obs_queue.put(out, timeout=5)  # 将观察值放入队列
+
+            except Full:
+                mine.mine_logger.error("Observation queue is full. Possible deadlock.")
+                raise TimeoutError("Observation queue is full")
+
+            # 断点 3: 从队列中获取动作之前
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time <= 0:
+                raise TimeoutError("Timeout occurred before getting action")
+
+            action = self.act_queue.get()  # 从队列中获取动作.这里不设置超时。
+            mine.mine_logger.debug(f"RECEIVED order of {truck.name} at {mine.env.now}, action is {action}")  # debug
+            # 断点 4: 成功获取动作之后
+            return action
+
+        except TimeoutError as e:
+            mine.mine_logger.error(f"Timeout error in _step: {str(e)}")
+            # 这里可以添加一些恢复逻辑，比如返回一个默认动作
+            return 0  # 或者其他默认动作
+
+        except Exception as e:
+            import traceback
+            mine.mine_logger.error(f"Unexpected error in _step: {str(e)}")
+            traceback.print_exc()
+            raise
+
+        finally:
+            end_time = time.time()
+            if end_time - start_time > 1:
+                mine.mine_logger.debug(f"Step execution time: {end_time - start_time:.2f} seconds. obs-lock: {self.obs_queue._rlock} act-lock: {self.act_queue._rlock}. Env time: {mine.env.now} Done: {mine.done} Truckname:{truck.name} Location: {truck.current_location.name} OBS_queue_len:{self.obs_queue.qsize()}, act_queue_len: {self.act_queue.qsize()}")
 
     def give_init_order(self, truck: Truck, mine: Mine) -> int:
         """
@@ -203,7 +242,7 @@ class RLDispatcher(BaseDispatcher):
         observation = {
             "truck_name":truck.name,
             "event_name": event_name,# order type
-            "info": info,# total tons, time
+            "info": info, # total tons, time
             "the_truck_status": the_truck_status,# the truck stats
             "target_status": target_status,# loading/unloading site stats
             "cur_road_status": cur_road_status,# road net status

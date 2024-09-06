@@ -1,205 +1,287 @@
 import os
+import sys
+import time
+import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-import torch.nn.functional as F
 from torch.distributions import Categorical
-import numpy as np
 from torch.utils.tensorboard import SummaryWriter
+import torch.multiprocessing as mp
 from tqdm import tqdm
-import multiprocessing as mp
+
+# Disable warnings to speed up execution
+import warnings
+warnings.filterwarnings('ignore')
+
+# Import your environment
 from openmines.src.utils.rl_env import MineEnv
 
-# 禁用警告以加速运算
-import warnings
+# Hyperparameters
+GAMMA = 0.99
+GAE_LAMBDA = 0.95
+CLIP_EPSILON = 0.2
+CRITIC_DISCOUNT = 0.5
+ENTROPY_BETA = 0.01
+LEARNING_RATE = 3e-4
+PPO_EPOCHS = 10
+BATCH_SIZE = 64
+NUM_STEPS = 240  # Steps per episode
+NUM_PROCESSES = 8
+NUM_UPDATES = 1000
+MAX_GRAD_NORM = 0.5
 
-warnings.filterwarnings('ignore')
-os.environ['PYTHONWARNINGS'] = 'ignore'
+# Neural network model
+class ActorCritic(nn.Module):
+    def __init__(self, state_dim, action_dim):
+        super(ActorCritic, self).__init__()
+        self.actor = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+            nn.Linear(64, action_dim),
+            nn.Softmax(dim=-1)
+        )
+        self.critic = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.Tanh(),
+            nn.Linear(64, 64),
+            nn.Tanh(),
+            nn.Linear(64, 1)
+        )
 
-# 设置设备
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
-
-
-# 特征预处理函数
-def preprocess_features(ob):
-    # 提取相关特征
-    truck_features = [
-        ob['the_truck_status']['truck_load'],
-        ob['the_truck_status']['truck_capacity'],
-        ob['the_truck_status']['truck_cycle_time'],
-        ob['the_truck_status']['truck_speed']
-    ]
-
-    # 处理目标状态
-    target_features = []
-    for i in range(5):  # 假设有5个目标位置
-        target_features.extend([
-            ob['target_status']['queue_lengths'][i],
-            ob['target_status']['capacities'][i],
-            ob['target_status']['est_wait'][i],
-            ob['target_status']['produced_tons'][i],
-            ob['target_status']['service_counts'][i]
-        ])
-
-    # 处理道路状态
-    road_features = []
-    for road_type in ['charging2load', 'load2dump', 'dump2load']:
-        for i in range(5):  # 假设每种道路类型有5个
-            road_features.extend([
-                ob['cur_road_status'][road_type]['truck_count'].get(i, 0),
-                ob['cur_road_status'][road_type]['distances'].get(i, 0),
-                ob['cur_road_status'][road_type]['truck_jam_count'].get(i, 0),
-                ob['cur_road_status'][road_type]['repair_count'].get(i, 0)
-            ])
-
-    # 合并所有特征
-    all_features = truck_features + target_features + road_features
-
-    # 归一化特征
-    normalized_features = (np.array(all_features) - np.mean(all_features)) / (np.std(all_features) + 1e-8)
-
-    return torch.FloatTensor(normalized_features).unsqueeze(0).to(device)
-
-
-# 定义策略网络
-class PolicyNetwork(nn.Module):
-    def __init__(self, input_dim, output_dim):
-        super(PolicyNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, output_dim)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return F.softmax(self.fc3(x), dim=-1)
-
-
-# 定义值网络
-class ValueNetwork(nn.Module):
-    def __init__(self, input_dim):
-        super(ValueNetwork, self).__init__()
-        self.fc1 = nn.Linear(input_dim, 64)
-        self.fc2 = nn.Linear(64, 64)
-        self.fc3 = nn.Linear(64, 1)
-
-    def forward(self, x):
-        x = F.relu(self.fc1(x))
-        x = F.relu(self.fc2(x))
-        return self.fc3(x)
-
-
-# PPO Agent
-class PPOAgent:
-    def __init__(self, input_dim, output_dim, learning_rate=3e-4, gamma=0.99, epsilon=0.2, value_coef=0.5,
-                 entropy_coef=0.01):
-        self.policy = PolicyNetwork(input_dim, output_dim).to(device)
-        self.value = ValueNetwork(input_dim).to(device)
-        self.optimizer = optim.Adam(list(self.policy.parameters()) + list(self.value.parameters()), lr=learning_rate)
-        self.gamma = gamma
-        self.epsilon = epsilon
-        self.value_coef = value_coef
-        self.entropy_coef = entropy_coef
+    def forward(self):
+        raise NotImplementedError
 
     def act(self, state):
-        with torch.no_grad():
-            probs = self.policy(state)
-            dist = Categorical(probs)
-            action = dist.sample()
-            log_prob = dist.log_prob(action)
-        return action.item(), log_prob
+        action_probs = self.actor(state)
+        dist = Categorical(action_probs)
+        action = dist.sample()
+        return action, dist.log_prob(action), dist.entropy(), self.critic(state)
 
-    def update(self, states, actions, old_log_probs, rewards, next_states, dones):
-        states = torch.cat(states)
-        actions = torch.tensor(actions).long().to(device)
-        old_log_probs = torch.cat(old_log_probs)
-        rewards = torch.tensor(rewards).float().to(device)
-        next_states = torch.cat(next_states)
-        dones = torch.tensor(dones).float().to(device)
+    def evaluate(self, state, action):
+        action_probs = self.actor(state)
+        dist = Categorical(action_probs)
+        action_logprobs = dist.log_prob(action)
+        dist_entropy = dist.entropy()
+        state_values = self.critic(state)
+        return action_logprobs, state_values, dist_entropy
 
-        # 计算优势
-        values = self.value(states).squeeze()
-        next_values = self.value(next_states).squeeze()
-        td_target = rewards + self.gamma * next_values * (1 - dones)
-        td_error = td_target - values
-        advantages = td_error.detach()
+# Memory class
+class Memory:
+    def __init__(self):
+        self.states = []
+        self.actions = []
+        self.log_probs = []
+        self.rewards = []
+        self.is_terminals = []
+        self.values = []
 
-        # PPO更新
-        for _ in range(10):  # 进行多次更新
-            new_probs = self.policy(states)
-            new_log_probs = torch.log(new_probs.gather(1, actions.unsqueeze(1)).squeeze())
-            ratio = torch.exp(new_log_probs - old_log_probs)
-            surr1 = ratio * advantages
-            surr2 = torch.clamp(ratio, 1 - self.epsilon, 1 + self.epsilon) * advantages
-            policy_loss = -torch.min(surr1, surr2).mean()
+    def clear_memory(self):
+        del self.states[:]
+        del self.actions[:]
+        del self.log_probs[:]
+        del self.rewards[:]
+        del self.is_terminals[:]
+        del self.values[:]
 
-            value_loss = F.mse_loss(self.value(states).squeeze(), td_target.detach())
+    def compute_gae(self, next_value):
+        values = self.values + [next_value]
+        gae = 0
+        returns = []
+        for step in reversed(range(len(self.rewards))):
+            delta = self.rewards[step] + GAMMA * values[step + 1] * (1 - self.is_terminals[step]) - values[step]
+            gae = delta + GAMMA * GAE_LAMBDA * (1 - self.is_terminals[step]) * gae
+            returns.insert(0, gae + values[step])
+        return returns
 
-            entropy = -(new_probs * torch.log(new_probs + 1e-8)).sum(dim=1).mean()
+    def get(self):
+        states = torch.stack(self.states)
+        actions = torch.stack(self.actions)
+        log_probs = torch.stack(self.log_probs)
+        values = torch.stack(self.values).squeeze(-1)
+        returns = torch.tensor(self.compute_gae(values[-1].item()))
+        advantages = returns - values
 
-            loss = policy_loss + self.value_coef * value_loss - self.entropy_coef * entropy
+        return states, actions, log_probs, returns, advantages
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+# PPO algorithm
+class PPO:
+    def __init__(self, state_dim, action_dim):
+        self.policy = ActorCritic(state_dim, action_dim)
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
+        self.policy_old = ActorCritic(state_dim, action_dim)
+        self.policy_old.load_state_dict(self.policy.state_dict())
+
+    def update(self, memories):
+        all_states = []
+        all_actions = []
+        all_log_probs = []
+        all_returns = []
+        all_advantages = []
+
+        for memory in memories:
+            states, actions, log_probs, returns, advantages = memory.get()
+            all_states.extend(states)
+            all_actions.extend(actions)
+            all_log_probs.extend(log_probs)
+            all_returns.extend(returns)
+            all_advantages.extend(advantages)
+
+        all_states = torch.stack(all_states)
+        all_actions = torch.stack(all_actions)
+        all_log_probs = torch.stack(all_log_probs)
+        all_returns = torch.stack(all_returns)
+        all_advantages = torch.stack(all_advantages)
+
+        # Normalize advantages
+        all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+
+        for _ in range(PPO_EPOCHS):
+            for index in range(0, len(all_states), BATCH_SIZE):
+                states = all_states[index:index + BATCH_SIZE]
+                actions = all_actions[index:index + BATCH_SIZE]
+                old_log_probs = all_log_probs[index:index + BATCH_SIZE]
+                returns = all_returns[index:index + BATCH_SIZE]
+                advantages = all_advantages[index:index + BATCH_SIZE]
+
+                new_log_probs, state_values, dist_entropy = self.policy.evaluate(states, actions)
+
+                ratio = torch.exp(new_log_probs - old_log_probs)
+
+                surr1 = ratio * advantages
+                surr2 = torch.clamp(ratio, 1.0 - CLIP_EPSILON, 1.0 + CLIP_EPSILON) * advantages
+
+                actor_loss = -torch.min(surr1, surr2).mean()
+                critic_loss = nn.MSELoss()(state_values, returns.unsqueeze(-1))
+                entropy_loss = -dist_entropy.mean()
+
+                loss = actor_loss + CRITIC_DISCOUNT * critic_loss + ENTROPY_BETA * entropy_loss
+
+                self.optimizer.zero_grad()
+                loss.backward()
+                nn.utils.clip_grad_norm_(self.policy.parameters(), MAX_GRAD_NORM)
+                self.optimizer.step()
+
+        self.policy_old.load_state_dict(self.policy.state_dict())
+
+# Feature preprocessing function
+def preprocess_features(observation):
+    truck_features = np.array([
+        observation['the_truck_status']['truck_load'] / observation['the_truck_status']['truck_capacity'],
+        observation['the_truck_status']['truck_speed'] / 100,
+        observation['the_truck_status']['truck_cycle_time'] / 1000
+    ])
+
+    road_features = np.concatenate([
+        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / 10,
+        np.array(list(observation['cur_road_status']['charging2load']['distances'].values())) / 10,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / 5,
+        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / 5,
+    ])
+
+    target_features = np.concatenate([
+        np.array(observation['target_status']['queue_lengths']) / 10,
+        np.array(observation['target_status']['capacities']) / 1000,
+        np.array(observation['target_status']['est_wait']) / 100,
+        np.array(observation['target_status']['produced_tons']) / 1000,
+        np.array(observation['target_status']['service_counts']) / 100,
+    ])
+
+    state = np.concatenate([truck_features, road_features, target_features])
+
+    return state
 
 
-# 训练函数
-def train(env, agent, num_episodes, max_steps):
-    writer = SummaryWriter()
+# Worker function for collecting trajectories
+def collect_trajectory(env_config, policy, process_id, trajectory_queue):
+    env = MineEnv.make(env_config, log=False, ticks=False)
+    memory = Memory()
 
-    with tqdm(total=num_episodes, desc="Episodes", unit="ep") as pbar:
-        for episode in range(num_episodes):
-            observation, info = env.reset()
-            state = preprocess_features(observation)
-            episode_reward = 0
+    observation, _ = env.reset(seed=int(time.time() + process_id))  # Use different seeds for each process
+    state = preprocess_features(observation)
+    episode_reward = 0
 
-            for step in range(max_steps):
-                action, log_prob = agent.act(state)
-                next_observation, reward, done, truncated, info = env.step(action)
-                next_state = preprocess_features(next_observation)
-                episode_reward += reward
+    for _ in range(NUM_STEPS):
+        state_tensor = torch.FloatTensor(state)
+        action, log_prob, _, value = policy.act(state_tensor)
 
-                agent.update([state], [action], [log_prob], [reward], [next_state], [done or truncated])
+        observation, reward, done, truncated, _ = env.step(action.item())
+        next_state = preprocess_features(observation)
 
-                if done or truncated:
-                    break
+        memory.states.append(state_tensor.detach())
+        memory.actions.append(action.detach())
+        memory.log_probs.append(log_prob.detach())
+        memory.rewards.append(reward)
+        memory.is_terminals.append(done)
+        memory.values.append(value.detach())
 
-                state = next_state
+        state = next_state
+        episode_reward += reward
 
-            writer.add_scalar('Reward', episode_reward, episode)
-            pbar.update(1)
-            pbar.set_postfix({'Reward': f'{episode_reward:.2f}'})
+        if done or truncated:
+            break
 
-    writer.close()
-
-
-# 多进程训练函数
-def train_worker(rank, num_episodes, max_steps, return_dict):
-    env = MineEnv.make("../../openmines/src/conf/north_pit_mine.json", log=False, ticks=False)
-    env.reset(seed=42 + rank)  # 每个进程使用不同的种子
-    agent = PPOAgent(input_dim=85, output_dim=5)  # 根据你的环境调整输入和输出维度
-    train(env, agent, num_episodes, max_steps)
-    return_dict[rank] = "Completed"
+    trajectory_queue.put((memory, episode_reward))
+    env.close()
 
 
-if __name__ == "__main__":
-    num_episodes = 1000
-    max_steps = 1000
-    num_processes = min(4, mp.cpu_count())  # 限制进程数量
+# Main function
+def main():
+    env_config = "../../openmines/src/conf/north_pit_mine.json"
+    env = MineEnv.make(env_config, log=False, ticks=False)
+    observation, _ = env.reset(seed=42)
+    state = preprocess_features(observation)
+    state_dim = len(state)
+    action_dim = len(observation['target_status']['queue_lengths'])
+    env.close()
+
+    ppo_agent = PPO(state_dim, action_dim)
+
+    if torch.cuda.is_available():
+        ppo_agent.policy.cuda()
+        ppo_agent.policy_old.cuda()
+        try:
+            mp.set_start_method('spawn')
+        except RuntimeError:
+            pass
+
+    writer = SummaryWriter('runs/mining_ppo_experiment')
 
     manager = mp.Manager()
-    return_dict = manager.dict()
+    trajectory_queue = manager.Queue()
 
-    processes = []
-    for rank in range(num_processes):
-        p = mp.Process(target=train_worker, args=(rank, num_episodes // num_processes, max_steps, return_dict))
-        p.start()
-        processes.append(p)
+    total_progress = tqdm(total=NUM_UPDATES, desc='Training Progress')
 
-    for p in processes:
-        p.join()
+    for update in range(NUM_UPDATES):
+        processes = []
+        for i in range(NUM_PROCESSES):
+            p = mp.Process(target=collect_trajectory, args=(env_config, ppo_agent.policy_old, i, trajectory_queue))
+            p.start()
+            processes.append(p)
 
-    print("All processes completed.")
-    print(return_dict)
+        memories = []
+        episode_rewards = []
+        for _ in range(NUM_PROCESSES):
+            memory, episode_reward = trajectory_queue.get()
+            memories.append(memory)
+            episode_rewards.append(episode_reward)
+
+        for p in processes:
+            p.join()
+
+        ppo_agent.update(memories)
+
+        avg_reward = sum(episode_rewards) / NUM_PROCESSES
+        writer.add_scalar('Average Reward', avg_reward, update)
+
+        total_progress.update(1)
+        total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}'})
+
+    total_progress.close()
+    writer.close()
+    print("\nTraining completed.")
+
+if __name__ == '__main__':
+    main()

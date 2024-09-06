@@ -25,6 +25,7 @@ def load_config(filename):
     with open(filename, 'r') as file:
         return json.load(file)
 
+
 def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=60*8, log:bool=False, ticks:bool=False, seed:int=42):
     """接受mp的输入，然后构建mine和子进程。
     为了兼容windows平台的spawn机制
@@ -228,11 +229,7 @@ class MineEnv:
         env.act_queue = Queue()
         env.p = multiprocessing.Process(target=prepare_env, args=(env.obs_queue, env.act_queue, env.config, env.config['sim_time'], env.log, env.ticks, seed_value))
         env.p.start()
-        #print(f"Running re-simulation at pid:{env.p.pid}, env: {env.config['mine']['name']}")
 
-        # # 等待子进程结束
-        # p.join()
-        # 获取ob
         """
         out = {
             "ob": self.current_observation,
@@ -248,23 +245,16 @@ class MineEnv:
         """重制环境生成观察空间,矿车INFO"""
         # 触发reset的时候，需要停止之前的进程
         if self.p.is_alive():
-            #print(f"Terminating previous simulation with pid: {self.p.pid}")
             self.p.terminate()
-            self.p.join()  # 确保子进程结束
 
         # 开始实验
         self.seed_value = seed
 
-        # todo: ticks功能在RL环境中也可以使用【暂时不做】
         # 下面开启一个env的子进程
         self.obs_queue = Queue()
         self.act_queue = Queue()
         self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.config['sim_time'], self.log, self.ticks, self.seed_value))
         self.p.start()
-        # print(f"Running re-simulation at pid:{self.p.pid}, env: {self.config['mine']['name']}")
-        # # 等待子进程结束
-        # p.join()
-        # 获取ob
         """
         out = {
             "ob": self.current_observation,
@@ -281,6 +271,4 @@ class MineEnv:
 
     def close(self):
         """防止产生孤儿进程"""
-        print("waitting for mine subprocess to end")
-        self.p.join()
-        print("env closed")
+        self.p.terminate()
