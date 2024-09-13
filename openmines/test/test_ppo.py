@@ -28,30 +28,29 @@ GAE_LAMBDA = 0.95
 CLIP_EPSILON = 0.2
 CRITIC_DISCOUNT = 0.5
 ENTROPY_BETA = 0.01
-ACTOR_LEARNING_RATE = 1e-4  # Adjusted learning rate for actor
-CRITIC_LEARNING_RATE = 1e-3  # Adjusted learning rate for critic
+ACTOR_LEARNING_RATE = 1e-4
+CRITIC_LEARNING_RATE = 1e-3
 PPO_EPOCHS = 10
 BATCH_SIZE = 64
-MAX_STEPS = 1000  # Maximum number of steps per episode
+MAX_STEPS = 1000
 NUM_PROCESSES = 7
 NUM_UPDATES = 1000
 MAX_GRAD_NORM = 0.5
 
-# Function to generate a unique run identifier
+# Function to generate unique run identifier
 def generate_run_id():
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     random_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
     return f"{timestamp}_{random_string}"
 
-# Function to generate a unique color for the run
+# Function to generate unique color
 def generate_run_color():
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-# Neural network model with separated Actor and Critic networks
+# Neural network model with separate Actor and Critic networks
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dims):
         super(ActorCritic, self).__init__()
-        # Actor network
         self.actor_encoder = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.Tanh(),
@@ -61,7 +60,6 @@ class ActorCritic(nn.Module):
         self.actor_heads = nn.ModuleList([
             nn.Linear(64, dim) for dim in action_dims
         ])
-        # Critic network
         self.critic = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.Tanh(),
@@ -80,7 +78,6 @@ class ActorCritic(nn.Module):
         assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action = dist.sample()
-        # Critic value
         value = self.critic(state)
         return action, dist.log_prob(action), dist.entropy(), value, action_probs
 
@@ -95,7 +92,6 @@ class ActorCritic(nn.Module):
         dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        # Critic value
         value = self.critic(state)
         return action_logprobs, value, dist_entropy
 
@@ -116,7 +112,8 @@ class Memory:
         self.values = []
         self.event_types = []
         self.action_probs = []
-        self.next_value = 0  # Initialize next_value
+        self.next_value = 0
+        self.total_production = 0
 
     def clear_memory(self):
         del self.states[:]
@@ -127,6 +124,7 @@ class Memory:
         del self.values[:]
         del self.event_types[:]
         del self.action_probs[:]
+        self.total_production = 0
 
     def compute_gae(self, next_value):
         values = self.values + [next_value]
@@ -150,12 +148,11 @@ class Memory:
 
         return states, actions, log_probs, returns, advantages, event_types, action_probs
 
-# PPO algorithm with separate optimizers for Actor and Critic
+# PPO algorithm with separate Actor and Critic optimizers
 class PPO:
     def __init__(self, state_dim, action_dims, device):
         self.device = device
         self.policy = ActorCritic(state_dim, action_dims).to(device)
-        # Separate optimizers for actor and critic
         self.actor_optimizer = optim.Adam(self.policy.actor_parameters(), lr=ACTOR_LEARNING_RATE)
         self.critic_optimizer = optim.Adam(self.policy.critic_parameters(), lr=CRITIC_LEARNING_RATE)
         self.policy_old = ActorCritic(state_dim, action_dims).to(device)
@@ -189,9 +186,6 @@ class PPO:
         all_event_types = torch.stack(all_event_types).to(self.device)
         all_action_probs = torch.stack(all_action_probs).to(self.device)
 
-        # Do not normalize advantages
-        # all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-5)
-
         for _ in range(PPO_EPOCHS):
             for index in range(0, len(all_states), BATCH_SIZE):
                 states = all_states[index:index + BATCH_SIZE]
@@ -212,13 +206,11 @@ class PPO:
                 critic_loss = nn.MSELoss()(state_values.squeeze(-1), returns)
                 entropy_loss = dist_entropy.mean()
 
-                # Update Actor network
                 self.actor_optimizer.zero_grad()
                 (actor_loss - ENTROPY_BETA * entropy_loss).backward()
                 nn.utils.clip_grad_norm_(self.policy.actor_parameters(), MAX_GRAD_NORM)
                 self.actor_optimizer.step()
 
-                # Update Critic network
                 self.critic_optimizer.zero_grad()
                 critic_loss.backward()
                 nn.utils.clip_grad_norm_(self.policy.critic_parameters(), MAX_GRAD_NORM)
@@ -226,9 +218,8 @@ class PPO:
 
         self.policy_old.load_state_dict(self.policy.state_dict())
 
-        # Calculate average action probabilities for each event type
         avg_action_probs = []
-        for event_type in range(3):  # Assuming 3 event types: init, haul, unhaul
+        for event_type in range(3):
             event_mask = all_event_types == event_type
             if event_mask.sum() > 0:
                 avg_probs = all_action_probs[event_mask].mean(dim=0).cpu().numpy()
@@ -261,29 +252,7 @@ def preprocess_features(observation):
 
     truck_features = np.array([
         observation['the_truck_status']['truck_load'] / (observation['the_truck_status']['truck_capacity'] + 1e-8),
-        observation['the_truck_status']['truck_speed'] / 100,
         observation['the_truck_status']['truck_cycle_time'] / 1000
-    ])
-
-    init_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['charging2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / (truck_num + 1e-8),
-    ])
-
-    haul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['load2dump']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / (truck_num + 1e-8),
-    ])
-
-    unhaul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['dump2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
-        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     target_features = np.concatenate([
@@ -294,7 +263,7 @@ def preprocess_features(observation):
         np.log(np.array(observation['target_status']['service_counts']) + 1),
     ])
 
-    state = np.concatenate([order_and_position, truck_features, init_road_features, haul_road_features, unhaul_road_features, target_features])
+    state = np.concatenate([order_and_position, truck_features, target_features])
 
     assert not np.isnan(state).any(), f"NaN detected in state: {state}"
 
@@ -319,7 +288,7 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
         memory.states.append(state_tensor.detach().cpu())
         memory.actions.append(action.detach().cpu())
         memory.log_probs.append(log_prob.detach().cpu())
-        memory.rewards.append(reward)
+        memory.rewards.append(reward / 10000)  # Divide reward by 10000
         memory.is_terminals.append(done)
         memory.values.append(value.detach().cpu())
         memory.event_types.append(event_type)
@@ -330,8 +299,9 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
 
         state = next_state
         event_type = next_event_type
-        episode_reward += reward
+        episode_reward += reward / 10000  # Accumulate scaled reward
 
+    memory.total_production = observation['info']['produce_tons']  # Record total production
     if done or truncated:
         next_value = 0
     else:
@@ -393,13 +363,15 @@ def main(args):
 
     total_progress = tqdm(total=args.num_updates, desc=f'Training Progress (Run ID: {run_id})')
 
-    # Colors for actions (optional)
+    # Create colors for actions (optional)
     action_colors = [
         [f'#{random.randint(0, 0xFFFFFF):06x}' for _ in range(dim)]
         for dim in action_dims
     ]
 
     event_types = ['Init', 'Haul', 'Unhaul']
+
+    total_production = 0
 
     for update in range(args.num_updates):
         processes = []
@@ -412,6 +384,7 @@ def main(args):
         memories = []
         episode_rewards = []
         episode_lengths = []
+        episode_productions = []
         for p in processes:
             p.join()
 
@@ -420,6 +393,7 @@ def main(args):
             memories.append(memory)
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
+            episode_productions.append(memory.total_production)
 
         assert len(memories) > 0, "No trajectories collected"
 
@@ -427,20 +401,29 @@ def main(args):
 
         avg_reward = sum(episode_rewards) / args.num_processes
         avg_length = sum(episode_lengths) / args.num_processes
+        
+        # Calculate total production for this update
+        update_production = sum(episode_productions) / args.num_processes
+        production_increase = update_production - total_production
+        total_production = update_production
+
         writer.add_scalar('Average Reward', avg_reward, update)
         writer.add_scalar('Average Episode Length', avg_length, update)
+        writer.add_scalar('Total Production', total_production, update)
+        writer.add_scalar('Production Increase', production_increase, update)
 
-        # Optional: Log average action probabilities
+        # Log average action probabilities
         for event_type, probs, colors in zip(event_types, avg_action_probs, action_colors):
             action_prob_dict = {f'Action {i}': prob for i, prob in enumerate(probs)}
             writer.add_scalars(f'Avg Action Probabilities/{event_type}', action_prob_dict, update)
 
         total_progress.update(1)
-        total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}', 'Avg Length': f'{avg_length:.2f}'})
+        total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}', 'Avg Length': f'{avg_length:.2f}', 'Total Production': f'{total_production:.2f}'})
 
     total_progress.close()
     writer.close()
     print(f"\nTraining completed. Run ID: {run_id}, Color: {run_color}")
+    print(f"Final Total Production: {total_production}")
 
     # Save the final model
     torch.save(ppo_agent.policy.state_dict(), os.path.join(log_dir, "final_model.pth"))
