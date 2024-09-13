@@ -28,7 +28,8 @@ GAE_LAMBDA = 0.95
 CLIP_EPSILON = 0.2
 CRITIC_DISCOUNT = 0.5
 ENTROPY_BETA = 0.01
-LEARNING_RATE = 3e-4
+ACTOR_LEARNING_RATE = 1e-4  # Adjusted learning rate for actor
+CRITIC_LEARNING_RATE = 1e-3  # Adjusted learning rate for critic
 PPO_EPOCHS = 10
 BATCH_SIZE = 64
 MAX_STEPS = 1000  # Maximum number of steps per episode
@@ -46,11 +47,12 @@ def generate_run_id():
 def generate_run_color():
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
-# Neural network model
+# Neural network model with separated Actor and Critic networks
 class ActorCritic(nn.Module):
     def __init__(self, state_dim, action_dims):
         super(ActorCritic, self).__init__()
-        self.encoder = nn.Sequential(
+        # Actor network
+        self.actor_encoder = nn.Sequential(
             nn.Linear(state_dim, 64),
             nn.Tanh(),
             nn.Linear(64, 64),
@@ -59,7 +61,10 @@ class ActorCritic(nn.Module):
         self.actor_heads = nn.ModuleList([
             nn.Linear(64, dim) for dim in action_dims
         ])
+        # Critic network
         self.critic = nn.Sequential(
+            nn.Linear(state_dim, 64),
+            nn.Tanh(),
             nn.Linear(64, 64),
             nn.Tanh(),
             nn.Linear(64, 1)
@@ -69,42 +74,36 @@ class ActorCritic(nn.Module):
         raise NotImplementedError
 
     def act(self, state, event_type):
-        encoded_state = self.encoder(state)
-        action_probs = self.actor_heads[event_type](encoded_state)
-        action_probs = nn.functional.softmax(action_probs, dim=-1)
+        encoded_state = self.actor_encoder(state)
+        action_logits = self.actor_heads[event_type](encoded_state)
+        action_probs = nn.functional.softmax(action_logits, dim=-1)
         assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(encoded_state)
+        # Critic value
+        value = self.critic(state)
+        return action, dist.log_prob(action), dist.entropy(), value, action_probs
 
-    # def evaluate(self, state, action, event_type):
-    #     encoded_state = self.encoder(state)
-    #     # Convert event_type to integer if it's a tensor
-    #     if isinstance(event_type, torch.Tensor):
-    #         event_type = event_type.long()
-    #     action_probs = self.actor_heads[event_type](encoded_state)
-    #     action_probs = nn.functional.softmax(action_probs, dim=-1)
-    #     assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
-    #     dist = Categorical(action_probs)
-    #     action_logprobs = dist.log_prob(action)
-    #     dist_entropy = dist.entropy()
-    #     state_values = self.critic(encoded_state)
-    #     return action_logprobs, state_values, dist_entropy
-    
     def evaluate(self, state, action, event_type):
-        encoded_state = self.encoder(state)
-        # Handle batched and non-batched inputs
+        encoded_state = self.actor_encoder(state)
         if event_type.dim() > 0:
-            action_probs = torch.stack([self.actor_heads[et.item()](es) for et, es in zip(event_type, encoded_state)])
+            action_logits = torch.stack([self.actor_heads[et.item()](es) for et, es in zip(event_type, encoded_state)])
         else:
-            action_probs = self.actor_heads[event_type.item()](encoded_state)
-        action_probs = nn.functional.softmax(action_probs, dim=-1)
+            action_logits = self.actor_heads[event_type.item()](encoded_state)
+        action_probs = nn.functional.softmax(action_logits, dim=-1)
         assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
-        state_values = self.critic(encoded_state)
-        return action_logprobs, state_values, dist_entropy
+        # Critic value
+        value = self.critic(state)
+        return action_logprobs, value, dist_entropy
+
+    def actor_parameters(self):
+        return list(self.actor_encoder.parameters()) + list(self.actor_heads.parameters())
+
+    def critic_parameters(self):
+        return self.critic.parameters()
 
 # Memory class to handle variable-length episodes
 class Memory:
@@ -116,6 +115,8 @@ class Memory:
         self.is_terminals = []
         self.values = []
         self.event_types = []
+        self.action_probs = []
+        self.next_value = 0  # Initialize next_value
 
     def clear_memory(self):
         del self.states[:]
@@ -125,14 +126,15 @@ class Memory:
         del self.is_terminals[:]
         del self.values[:]
         del self.event_types[:]
+        del self.action_probs[:]
 
     def compute_gae(self, next_value):
         values = self.values + [next_value]
         gae = 0
         returns = []
         for step in reversed(range(len(self.rewards))):
-            delta = self.rewards[step] + GAMMA * values[step + 1] * (1 - self.is_terminals[step]) - values[step]
-            gae = delta + GAMMA * GAE_LAMBDA * (1 - self.is_terminals[step]) * gae
+            delta = self.rewards[step] + GAMMA * values[step + 1] - values[step]
+            gae = delta + GAMMA * GAE_LAMBDA * gae
             returns.insert(0, gae + values[step])
         return returns
 
@@ -141,20 +143,24 @@ class Memory:
         actions = torch.stack(self.actions)
         log_probs = torch.stack(self.log_probs)
         values = torch.stack(self.values).squeeze(-1)
-        returns = torch.tensor(self.compute_gae(values[-1].item()))
+        returns = torch.tensor(self.compute_gae(self.next_value))
         advantages = returns - values
         event_types = torch.tensor(self.event_types, dtype=torch.long)
+        action_probs = torch.stack(self.action_probs)
 
-        return states, actions, log_probs, returns, advantages, event_types
+        return states, actions, log_probs, returns, advantages, event_types, action_probs
 
-# PPO algorithm
+# PPO algorithm with separate optimizers for Actor and Critic
 class PPO:
     def __init__(self, state_dim, action_dims, device):
         self.device = device
         self.policy = ActorCritic(state_dim, action_dims).to(device)
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
+        # Separate optimizers for actor and critic
+        self.actor_optimizer = optim.Adam(self.policy.actor_parameters(), lr=ACTOR_LEARNING_RATE)
+        self.critic_optimizer = optim.Adam(self.policy.critic_parameters(), lr=CRITIC_LEARNING_RATE)
         self.policy_old = ActorCritic(state_dim, action_dims).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
+        self.action_dims = action_dims
 
     def update(self, memories):
         all_states = []
@@ -163,15 +169,17 @@ class PPO:
         all_returns = []
         all_advantages = []
         all_event_types = []
+        all_action_probs = []
 
         for memory in memories:
-            states, actions, log_probs, returns, advantages, event_types = memory.get()
+            states, actions, log_probs, returns, advantages, event_types, action_probs = memory.get()
             all_states.extend(states)
             all_actions.extend(actions)
             all_log_probs.extend(log_probs)
             all_returns.extend(returns)
             all_advantages.extend(advantages)
             all_event_types.extend(event_types)
+            all_action_probs.extend(action_probs)
 
         all_states = torch.stack(all_states).to(self.device)
         all_actions = torch.stack(all_actions).to(self.device)
@@ -179,9 +187,10 @@ class PPO:
         all_returns = torch.stack(all_returns).to(self.device)
         all_advantages = torch.stack(all_advantages).to(self.device)
         all_event_types = torch.stack(all_event_types).to(self.device)
+        all_action_probs = torch.stack(all_action_probs).to(self.device)
 
-        # Normalize advantages
-        all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+        # Do not normalize advantages
+        # all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-5)
 
         for _ in range(PPO_EPOCHS):
             for index in range(0, len(all_states), BATCH_SIZE):
@@ -200,17 +209,34 @@ class PPO:
                 surr2 = torch.clamp(ratio, 1.0 - CLIP_EPSILON, 1.0 + CLIP_EPSILON) * advantages
 
                 actor_loss = -torch.min(surr1, surr2).mean()
-                critic_loss = nn.MSELoss()(state_values, returns.unsqueeze(-1))
-                entropy_loss = -dist_entropy.mean()
+                critic_loss = nn.MSELoss()(state_values.squeeze(-1), returns)
+                entropy_loss = dist_entropy.mean()
 
-                loss = actor_loss + CRITIC_DISCOUNT * critic_loss + ENTROPY_BETA * entropy_loss
+                # Update Actor network
+                self.actor_optimizer.zero_grad()
+                (actor_loss - ENTROPY_BETA * entropy_loss).backward()
+                nn.utils.clip_grad_norm_(self.policy.actor_parameters(), MAX_GRAD_NORM)
+                self.actor_optimizer.step()
 
-                self.optimizer.zero_grad()
-                loss.backward()
-                nn.utils.clip_grad_norm_(self.policy.parameters(), MAX_GRAD_NORM)
-                self.optimizer.step()
+                # Update Critic network
+                self.critic_optimizer.zero_grad()
+                critic_loss.backward()
+                nn.utils.clip_grad_norm_(self.policy.critic_parameters(), MAX_GRAD_NORM)
+                self.critic_optimizer.step()
 
         self.policy_old.load_state_dict(self.policy.state_dict())
+
+        # Calculate average action probabilities for each event type
+        avg_action_probs = []
+        for event_type in range(3):  # Assuming 3 event types: init, haul, unhaul
+            event_mask = all_event_types == event_type
+            if event_mask.sum() > 0:
+                avg_probs = all_action_probs[event_mask].mean(dim=0).cpu().numpy()
+                avg_action_probs.append(avg_probs[:self.action_dims[event_type]])
+            else:
+                avg_action_probs.append(np.zeros(self.action_dims[event_type]))
+
+        return avg_action_probs
 
 # Feature preprocessing function
 def preprocess_features(observation):
@@ -285,7 +311,7 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
     for step in range(MAX_STEPS):
         state_tensor = torch.FloatTensor(state).to(device)
         with torch.no_grad():
-            action, log_prob, _, value = policy.act(state_tensor, event_type)
+            action, log_prob, _, value, action_probs = policy.act(state_tensor, event_type)
 
         observation, reward, done, truncated, _ = env.step(action.item())
         next_state, next_event_type = preprocess_features(observation)
@@ -297,14 +323,23 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
         memory.is_terminals.append(done)
         memory.values.append(value.detach().cpu())
         memory.event_types.append(event_type)
+        memory.action_probs.append(action_probs.detach().cpu())
+
+        if done or truncated:
+            break
 
         state = next_state
         event_type = next_event_type
         episode_reward += reward
 
-        if done or truncated:
-            break
-
+    if done or truncated:
+        next_value = 0
+    else:
+        next_state_tensor = torch.FloatTensor(next_state).to(device)
+        with torch.no_grad():
+            _, _, _, next_value, _ = policy.act(next_state_tensor, next_event_type)
+        next_value = next_value.item()
+    memory.next_value = next_value
     trajectory_queue.put((memory, episode_reward, step + 1))
     env.close()
 
@@ -324,7 +359,8 @@ def main(args):
         "num_updates": args.num_updates,
         "num_processes": args.num_processes,
         "max_steps": args.max_steps,
-        "learning_rate": LEARNING_RATE,
+        "actor_learning_rate": ACTOR_LEARNING_RATE,
+        "critic_learning_rate": CRITIC_LEARNING_RATE,
         "gamma": GAMMA,
         "gae_lambda": GAE_LAMBDA,
         "clip_epsilon": CLIP_EPSILON,
@@ -357,6 +393,14 @@ def main(args):
 
     total_progress = tqdm(total=args.num_updates, desc=f'Training Progress (Run ID: {run_id})')
 
+    # Colors for actions (optional)
+    action_colors = [
+        [f'#{random.randint(0, 0xFFFFFF):06x}' for _ in range(dim)]
+        for dim in action_dims
+    ]
+
+    event_types = ['Init', 'Haul', 'Unhaul']
+
     for update in range(args.num_updates):
         processes = []
         for i in range(args.num_processes):
@@ -379,12 +423,17 @@ def main(args):
 
         assert len(memories) > 0, "No trajectories collected"
 
-        ppo_agent.update(memories)
+        avg_action_probs = ppo_agent.update(memories)
 
         avg_reward = sum(episode_rewards) / args.num_processes
         avg_length = sum(episode_lengths) / args.num_processes
         writer.add_scalar('Average Reward', avg_reward, update)
         writer.add_scalar('Average Episode Length', avg_length, update)
+
+        # Optional: Log average action probabilities
+        for event_type, probs, colors in zip(event_types, avg_action_probs, action_colors):
+            action_prob_dict = {f'Action {i}': prob for i, prob in enumerate(probs)}
+            writer.add_scalars(f'Avg Action Probabilities/{event_type}', action_prob_dict, update)
 
         total_progress.update(1)
         total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}', 'Avg Length': f'{avg_length:.2f}'})
@@ -395,7 +444,6 @@ def main(args):
 
     # Save the final model
     torch.save(ppo_agent.policy.state_dict(), os.path.join(log_dir, "final_model.pth"))
-
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PPO Mining Environment Trainer")
