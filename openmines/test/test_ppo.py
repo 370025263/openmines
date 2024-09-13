@@ -72,14 +72,20 @@ class ActorCritic(nn.Module):
         encoded_state = self.encoder(state)
         action_probs = self.actor_heads[event_type](encoded_state)
         action_probs = nn.functional.softmax(action_probs, dim=-1)
+        assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action = dist.sample()
-        return action, dist.log_prob(action), dist.entropy(), self.critic(encoded_state)
+        return action, dist.log_prob(action), dist.entropy(), self.critic(encoded_state), action_probs
 
     def evaluate(self, state, action, event_type):
         encoded_state = self.encoder(state)
-        action_probs = self.actor_heads[event_type](encoded_state)
+        # Handle batched and non-batched inputs
+        if event_type.dim() > 0:
+            action_probs = torch.stack([self.actor_heads[et.item()](es) for et, es in zip(event_type, encoded_state)])
+        else:
+            action_probs = self.actor_heads[event_type.item()](encoded_state)
         action_probs = nn.functional.softmax(action_probs, dim=-1)
+        assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
         dist = Categorical(action_probs)
         action_logprobs = dist.log_prob(action)
         dist_entropy = dist.entropy()
@@ -96,6 +102,9 @@ class Memory:
         self.is_terminals = []
         self.values = []
         self.event_types = []
+        self.action_probs = []
+        self.next_value = 0  # 初始化 next_value
+
 
     def clear_memory(self):
         del self.states[:]
@@ -105,6 +114,7 @@ class Memory:
         del self.is_terminals[:]
         del self.values[:]
         del self.event_types[:]
+        del self.action_probs[:]
 
     def compute_gae(self, next_value):
         values = self.values + [next_value]
@@ -121,11 +131,12 @@ class Memory:
         actions = torch.stack(self.actions)
         log_probs = torch.stack(self.log_probs)
         values = torch.stack(self.values).squeeze(-1)
-        returns = torch.tensor(self.compute_gae(values[-1].item()))
+        returns = torch.tensor(self.compute_gae(self.next_value))
         advantages = returns - values
-        event_types = torch.tensor(self.event_types)
+        event_types = torch.tensor(self.event_types, dtype=torch.long)
+        action_probs = torch.stack(self.action_probs)
 
-        return states, actions, log_probs, returns, advantages, event_types
+        return states, actions, log_probs, returns, advantages, event_types, action_probs
 
 # PPO algorithm
 class PPO:
@@ -135,6 +146,7 @@ class PPO:
         self.optimizer = optim.Adam(self.policy.parameters(), lr=LEARNING_RATE)
         self.policy_old = ActorCritic(state_dim, action_dims).to(device)
         self.policy_old.load_state_dict(self.policy.state_dict())
+        self.action_dims = action_dims
 
     def update(self, memories):
         all_states = []
@@ -143,15 +155,17 @@ class PPO:
         all_returns = []
         all_advantages = []
         all_event_types = []
+        all_action_probs = []
 
         for memory in memories:
-            states, actions, log_probs, returns, advantages, event_types = memory.get()
+            states, actions, log_probs, returns, advantages, event_types, action_probs = memory.get()
             all_states.extend(states)
             all_actions.extend(actions)
             all_log_probs.extend(log_probs)
             all_returns.extend(returns)
             all_advantages.extend(advantages)
             all_event_types.extend(event_types)
+            all_action_probs.extend(action_probs)
 
         all_states = torch.stack(all_states).to(self.device)
         all_actions = torch.stack(all_actions).to(self.device)
@@ -159,9 +173,10 @@ class PPO:
         all_returns = torch.stack(all_returns).to(self.device)
         all_advantages = torch.stack(all_advantages).to(self.device)
         all_event_types = torch.stack(all_event_types).to(self.device)
+        all_action_probs = torch.stack(all_action_probs).to(self.device)
 
         # Normalize advantages
-        all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-8)
+        all_advantages = (all_advantages - all_advantages.mean()) / (all_advantages.std() + 1e-5)
 
         for _ in range(PPO_EPOCHS):
             for index in range(0, len(all_states), BATCH_SIZE):
@@ -192,6 +207,19 @@ class PPO:
 
         self.policy_old.load_state_dict(self.policy.state_dict())
 
+        # Calculate average action probabilities for each event type
+        avg_action_probs = []
+        for event_type in range(3):  # Assuming 3 event types: init, haul, unhaul
+            event_mask = all_event_types == event_type
+            if event_mask.sum() > 0:
+                avg_probs = all_action_probs[event_mask].mean(dim=0).cpu().numpy()
+                avg_action_probs.append(avg_probs[:self.action_dims[event_type]])
+            else:
+                avg_action_probs.append(np.zeros(self.action_dims[event_type]))
+
+        return avg_action_probs
+
+
 # Feature preprocessing function
 def preprocess_features(observation):
     event_name = observation['event_name']
@@ -214,41 +242,43 @@ def preprocess_features(observation):
     truck_num = observation['mine_status']['truck_count']
 
     truck_features = np.array([
-        observation['the_truck_status']['truck_load'] / observation['the_truck_status']['truck_capacity'],
+        observation['the_truck_status']['truck_load'] / (observation['the_truck_status']['truck_capacity'] + 1e-8),
         observation['the_truck_status']['truck_speed'] / 100,
         observation['the_truck_status']['truck_cycle_time'] / 1000
     ])
 
     init_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['charging2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['charging2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['charging2load']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     haul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['load2dump']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['load2dump']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['load2dump']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     unhaul_road_features = np.concatenate([
-        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['truck_count'].values())) / (truck_num + 1e-8),
         np.array(list(observation['cur_road_status']['dump2load']['distances'].values())) / 10,
-        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / truck_num,
-        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / truck_num,
+        np.array(list(observation['cur_road_status']['dump2load']['truck_jam_count'].values())) / (truck_num + 1e-8),
+        np.array(list(observation['cur_road_status']['dump2load']['repair_count'].values())) / (truck_num + 1e-8),
     ])
 
     target_features = np.concatenate([
-        np.array(observation['target_status']['queue_lengths']) / truck_num,
-        np.array(np.log(observation['target_status']['capacities'])),
-        np.array(np.log(observation['target_status']['est_wait'])),
-        np.array(np.log(observation['target_status']['produced_tons'])),
-        np.array(np.log(observation['target_status']['service_counts'])),
+        np.array(observation['target_status']['queue_lengths']) / (truck_num + 1e-8),
+        np.log(np.array(observation['target_status']['capacities']) + 1),
+        np.log(np.array(observation['target_status']['est_wait']) + 1),
+        np.log(np.array(observation['target_status']['produced_tons']) + 1),
+        np.log(np.array(observation['target_status']['service_counts']) + 1),
     ])
 
     state = np.concatenate([order_and_position, truck_features, init_road_features, haul_road_features, unhaul_road_features, target_features])
+
+    assert not np.isnan(state).any(), f"NaN detected in state: {state}"
 
     return state, event_type
 
@@ -263,7 +293,7 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
     for step in range(MAX_STEPS):
         state_tensor = torch.FloatTensor(state).to(device)
         with torch.no_grad():
-            action, log_prob, _, value = policy.act(state_tensor, event_type)
+            action, log_prob, _, value, action_probs = policy.act(state_tensor, event_type)
 
         observation, reward, done, truncated, _ = env.step(action.item())
         next_state, next_event_type = preprocess_features(observation)
@@ -275,15 +305,23 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
         memory.is_terminals.append(done)
         memory.values.append(value.detach().cpu())
         memory.event_types.append(event_type)
+        memory.action_probs.append(action_probs.detach().cpu())
+
+        if done or truncated:
+            break
 
         state = next_state
         event_type = next_event_type
         episode_reward += reward
 
-        if done or truncated:
-            break
-
-    trajectory_queue.put((memory, episode_reward, step + 1))
+    if done or truncated:
+        next_value = 0
+    else:
+        next_state_tensor = torch.FloatTensor(next_state).to(device)
+        with torch.no_grad():
+            _, _, _, next_value, _ = policy.act(next_state_tensor, next_event_type)
+        next_value = next_value.item()
+    trajectory_queue.put((memory, episode_reward, step + 1, next_value))
     env.close()
 
 # Main function
@@ -335,6 +373,14 @@ def main(args):
 
     total_progress = tqdm(total=args.num_updates, desc=f'Training Progress (Run ID: {run_id})')
 
+    # 为每个动作创建不同的颜色
+    action_colors = [
+        [f'#{random.randint(0, 0xFFFFFF):06x}' for _ in range(dim)]
+        for dim in action_dims
+    ]
+
+    event_types = ['Init', 'Haul', 'Unhaul']
+
     for update in range(args.num_updates):
         processes = []
         for i in range(args.num_processes):
@@ -350,17 +396,25 @@ def main(args):
             p.join()
 
         for _ in range(args.num_processes):
-            memory, episode_reward, episode_length = trajectory_queue.get()
+            memory, episode_reward, episode_length, next_value = trajectory_queue.get()
+            memory.next_value = next_value
             memories.append(memory)
             episode_rewards.append(episode_reward)
             episode_lengths.append(episode_length)
 
-        ppo_agent.update(memories)
+        assert len(memories) > 0, "No trajectories collected"
+
+        avg_action_probs = ppo_agent.update(memories)
 
         avg_reward = sum(episode_rewards) / args.num_processes
         avg_length = sum(episode_lengths) / args.num_processes
         writer.add_scalar('Average Reward', avg_reward, update)
         writer.add_scalar('Average Episode Length', avg_length, update)
+
+        # 为每种事件类型创建单独的动作概率图表
+        for event_type, probs, colors in zip(event_types, avg_action_probs, action_colors):
+            action_prob_dict = {f'Action {i}': prob for i, prob in enumerate(probs)}
+            writer.add_scalars(f'Avg Action Probabilities/{event_type}', action_prob_dict, update)
 
         total_progress.update(1)
         total_progress.set_postfix({'Avg Reward': f'{avg_reward:.2f}', 'Avg Length': f'{avg_length:.2f}'})
@@ -372,7 +426,6 @@ def main(args):
     # Save the final model
     torch.save(ppo_agent.policy.state_dict(), os.path.join(log_dir, "final_model.pth"))
 
-
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="PPO Mining Environment Trainer")
     parser.add_argument("--env_config", type=str, default="../../openmines/src/conf/north_pit_mine.json",
@@ -383,4 +436,3 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     main(args)
-
