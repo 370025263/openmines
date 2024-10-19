@@ -37,7 +37,8 @@ class DQN(nn.Module):
         super(DQN, self).__init__()
         self.fc1 = nn.Linear(state_dim, 128)
         self.fc2 = nn.Linear(128, 128)
-        # 对于每种事件类型，定义一个输出层
+        self.action_dims = action_dims
+        # 输出层：我们将为每个事件类型创建一个独立的输出层
         self.output_layers = nn.ModuleList([
             nn.Linear(128, dim) for dim in action_dims
         ])
@@ -45,7 +46,15 @@ class DQN(nn.Module):
     def forward(self, state, event_type):
         x = torch.relu(self.fc1(state))
         x = torch.relu(self.fc2(x))
-        q_values = self.output_layers[event_type](x)
+        # 由于 event_type 可能是批量的，需要特殊处理
+        if state.shape[0] == 1:
+            # 单个样本
+            q_values = self.output_layers[event_type.item()](x)
+        else:
+            # 批量样本
+            q_values = torch.stack([
+                self.output_layers[et.item()](h) for et, h in zip(event_type, x)
+            ])
         return q_values
 
 # 经验回放缓冲区
@@ -62,7 +71,7 @@ class ReplayMemory:
     def __len__(self):
         return len(self.memory)
 
-# 特征预处理函数（与之前相同）
+# 特征预处理函数（与 PPO 代码一致）
 def preprocess_features(observation):
     event_name = observation['event_name']
     if event_name == "init":
@@ -104,6 +113,7 @@ def preprocess_features(observation):
 
 # 训练 DQN 模型的函数
 def train_dqn(args):
+    # 创建环境并获取状态和动作空间维度
     env = MineEnv.make(args.env_config, log=False, ticks=False)
     observation, _ = env.reset(seed=42)
     state, event_type = preprocess_features(observation)
@@ -132,30 +142,37 @@ def train_dqn(args):
             np.exp(-1. * steps_done / EPS_DECAY)
         steps_done += 1
         if random.random() < eps_threshold:
-            return torch.tensor([[random.randrange(action_dims[event_type])]], device=device, dtype=torch.long)
+            action = random.randrange(action_dims[event_type.item()])
+            return torch.tensor([[action]], device=device, dtype=torch.long)
         else:
             with torch.no_grad():
                 q_values = policy_net(state, event_type)
-                return q_values.max(1)[1].view(1, 1)
+                action = q_values.max(1)[1].view(1, 1)
+                return action
 
     episode_rewards = []
-    for episode in tqdm(range(NUM_EPISODES), desc='Training DQN'):
+    total_progress = tqdm(range(NUM_EPISODES), desc='Training DQN')
+
+    for episode in total_progress:
         env = MineEnv.make(args.env_config, log=False, ticks=False)
         observation, _ = env.reset(seed=episode)
-        state, event_type = preprocess_features(observation)
-        state = torch.tensor([state], device=device, dtype=torch.float)
+        state_np, event_type = preprocess_features(observation)
+        state = torch.tensor([state_np], device=device, dtype=torch.float)
+        event_type = torch.tensor([event_type], device=device, dtype=torch.long)
         total_reward = 0
         for t in range(MAX_STEPS):
             action = select_action(state, event_type)
             action_item = action.item()
             observation, reward, done, truncated, _ = env.step(action_item)
             total_reward += reward
-            reward = torch.tensor([reward], device=device, dtype=torch.float)
+            reward_tensor = torch.tensor([reward], device=device, dtype=torch.float)
 
-            next_state, next_event_type = preprocess_features(observation)
-            next_state = torch.tensor([next_state], device=device, dtype=torch.float)
+            next_state_np, next_event_type = preprocess_features(observation)
+            next_state = torch.tensor([next_state_np], device=device, dtype=torch.float)
+            next_event_type = torch.tensor([next_event_type], device=device, dtype=torch.long)
 
-            memory.push(state, event_type, action, next_state, next_event_type, reward, done)
+            # 将经验存入回放缓冲区
+            memory.push(state, event_type, action, reward_tensor, next_state, next_event_type, done)
 
             state = next_state
             event_type = next_event_type
@@ -163,7 +180,7 @@ def train_dqn(args):
             # 经验回放并训练
             if len(memory) >= BATCH_SIZE:
                 transitions = memory.sample(BATCH_SIZE)
-                batch_state, batch_event_type, batch_action, batch_next_state, batch_next_event_type, batch_reward, batch_done = zip(*transitions)
+                batch_state, batch_event_type, batch_action, batch_reward, batch_next_state, batch_next_event_type, batch_done = zip(*transitions)
 
                 batch_state = torch.cat(batch_state)
                 batch_action = torch.cat(batch_action)
@@ -171,8 +188,8 @@ def train_dqn(args):
                 batch_next_state = torch.cat(batch_next_state)
                 batch_done = torch.tensor(batch_done, device=device, dtype=torch.bool)
 
-                batch_event_type = torch.tensor(batch_event_type, device=device, dtype=torch.long)
-                batch_next_event_type = torch.tensor(batch_next_event_type, device=device, dtype=torch.long)
+                batch_event_type = torch.cat(batch_event_type)
+                batch_next_event_type = torch.cat(batch_next_event_type)
 
                 # 计算 Q(s_t, a)
                 state_action_values = policy_net(batch_state, batch_event_type).gather(1, batch_action)
@@ -183,10 +200,14 @@ def train_dqn(args):
                     non_final_mask = ~batch_done
                     non_final_next_states = batch_next_state[non_final_mask]
                     non_final_next_event_types = batch_next_event_type[non_final_mask]
-                    next_state_values[non_final_mask] = target_net(non_final_next_states, non_final_next_event_types).max(1)[0]
+                    if len(non_final_next_states) > 0:
+                        next_q_values = target_net(non_final_next_states, non_final_next_event_types)
+                        next_state_values[non_final_mask] = next_q_values.max(1)[0]
+                    else:
+                        next_state_values[non_final_mask] = 0.0
 
                 # 计算期望的 Q 值
-                expected_state_action_values = (next_state_values * GAMMA) + batch_reward
+                expected_state_action_values = (next_state_values * GAMMA) + batch_reward.squeeze()
 
                 # 计算损失
                 loss = nn.MSELoss()(state_action_values.squeeze(), expected_state_action_values)
@@ -194,6 +215,8 @@ def train_dqn(args):
                 # 优化模型
                 optimizer.zero_grad()
                 loss.backward()
+                # 防止梯度爆炸
+                nn.utils.clip_grad_norm_(policy_net.parameters(), 1)
                 optimizer.step()
 
             if done or truncated:
@@ -209,7 +232,7 @@ def train_dqn(args):
         # 打印平均奖励
         if episode % 10 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
-            print(f'Episode {episode}, Average Reward: {avg_reward}')
+            total_progress.set_postfix({'Average Reward': f'{avg_reward:.2f}'})
 
     print('Training complete')
     torch.save(policy_net.state_dict(), 'dqn_model.pth')
