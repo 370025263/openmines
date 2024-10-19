@@ -34,6 +34,16 @@ EPS_START = 1.0
 EPS_END = 0.01
 EPS_DECAY = 500  # 衰减率
 
+# 生成唯一运行标识符的函数
+def generate_run_id():
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    random_string = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"{timestamp}_{random_string}"
+
+# 生成唯一颜色的函数
+def generate_run_color():
+    return "#{:06x}".format(random.randint(0, 0xFFFFFF))
+
 # 定义 Q 网络
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dims):
@@ -116,6 +126,31 @@ def preprocess_features(observation):
 
 # 训练 DQN 模型的函数
 def train_dqn(args):
+    run_id = generate_run_id()
+    run_color = generate_run_color()
+
+    log_dir = os.path.join("runs", run_id)
+    os.makedirs(log_dir, exist_ok=True)
+
+    # 保存运行配置
+    config = {
+        "run_id": run_id,
+        "run_color": run_color,
+        "env_config": args.env_config,
+        "num_episodes": args.num_episodes,
+        "max_steps": args.max_steps,
+        "learning_rate": LEARNING_RATE,
+        "gamma": GAMMA,
+        "batch_size": BATCH_SIZE,
+        "memory_size": MEMORY_SIZE,
+        "eps_start": EPS_START,
+        "eps_end": EPS_END,
+        "eps_decay": EPS_DECAY,
+    }
+
+    with open(os.path.join(log_dir, "config.json"), "w") as f:
+        json.dump(config, f, indent=4)
+
     # 创建环境并获取状态和动作空间维度
     env = MineEnv.make(args.env_config, log=False, ticks=False)
     observation, _ = env.reset(seed=42)
@@ -140,7 +175,7 @@ def train_dqn(args):
     steps_done = 0
 
     # 创建 TensorBoard SummaryWriter
-    writer = SummaryWriter()
+    writer = SummaryWriter(log_dir)
 
     def select_action(state, event_type):
         nonlocal steps_done
@@ -157,7 +192,18 @@ def train_dqn(args):
                 return action
 
     episode_rewards = []
-    total_progress = tqdm(range(NUM_EPISODES), desc='Training DQN')
+    episode_lengths = []
+    total_progress = tqdm(range(NUM_EPISODES), desc=f'Training DQN (Run ID: {run_id})')
+
+    total_production = 0
+
+    # 创建动作的颜色（可选）
+    action_colors = [
+        [f'#{random.randint(0, 0xFFFFFF):06x}' for _ in range(dim)]
+        for dim in action_dims
+    ]
+
+    event_types = ['Init', 'Haul', 'Unhaul']
 
     for episode in total_progress:
         env = MineEnv.make(args.env_config, log=False, ticks=False)
@@ -166,6 +212,7 @@ def train_dqn(args):
         state = torch.tensor([state_np], device=device, dtype=torch.float)
         event_type = torch.tensor([event_type], device=device, dtype=torch.long)
         total_reward = 0
+        step_count = 0
 
         # 用于记录每个动作的选择次数
         action_counts = {0: {}, 1: {}, 2: {}}
@@ -193,6 +240,7 @@ def train_dqn(args):
 
             state = next_state
             event_type = next_event_type
+            step_count += 1
 
             # 经验回放并训练
             if len(memory) >= BATCH_SIZE:
@@ -252,39 +300,63 @@ def train_dqn(args):
                 total_grad_norm = total_grad_norm ** 0.5
                 writer.add_scalar('Parameters/Gradient Norm', total_grad_norm, steps_done)
 
+                # 记录损失值
+                writer.add_scalar('Loss', loss.item(), steps_done)
+
             if done or truncated:
                 break
 
         episode_rewards.append(total_reward)
+        episode_lengths.append(step_count)
         env.close()
 
         # 每隔一定的回合数更新目标网络
         if episode % TARGET_UPDATE == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
-        # 记录每个回合的平均奖励
-        writer.add_scalar('Episode Reward', total_reward, episode)
+        # 计算此回合的总产量
+        update_production = observation['info']['produce_tons']
+        production_increase = update_production - total_production
+        total_production = update_production
+
+        avg_reward = total_reward
+        avg_length = step_count
+
+        writer.add_scalar('Average Reward', avg_reward, episode)
+        writer.add_scalar('Average Episode Length', avg_length, episode)
+        writer.add_scalar('Total Production', total_production, episode)
+        writer.add_scalar('Production Increase', production_increase, episode)
 
         # 记录每个事件类型的动作选择频率
         for et in action_counts:
             total_actions = sum(action_counts[et].values())
             if total_actions > 0:
-                action_freq = {f'Action_{a}': count / total_actions for a, count in action_counts[et].items()}
-                writer.add_scalars(f'Action Frequencies/EventType_{et}', action_freq, episode)
+                action_freq = {f'Action {a}': count / total_actions for a, count in action_counts[et].items()}
+                writer.add_scalars(f'Avg Action Probabilities/{event_types[et]}', action_freq, episode)
+
+        # 记录探索率 epsilon
+        eps_threshold = EPS_END + (EPS_START - EPS_END) * np.exp(-1. * steps_done / EPS_DECAY)
+        writer.add_scalar('Epsilon', eps_threshold, episode)
 
         # 更新进度条
         if episode % 10 == 0:
-            avg_reward = np.mean(episode_rewards[-10:])
-            total_progress.set_postfix({'Average Reward': f'{avg_reward:.2f}'})
+            avg_reward_last_10 = np.mean(episode_rewards[-10:])
+            total_progress.set_postfix({'Avg Reward': f'{avg_reward_last_10:.2f}', 'Avg Length': f'{avg_length:.2f}', 'Total Production': f'{total_production:.2f}'})
 
-    print('Training complete')
+    total_progress.close()
     writer.close()
-    torch.save(policy_net.state_dict(), 'dqn_model.pth')
+    print(f"\nTraining completed. Run ID: {run_id}, Color: {run_color}")
+    print(f"Final Total Production: {total_production}")
+
+    # 保存最终模型
+    torch.save(policy_net.state_dict(), os.path.join(log_dir, "dqn_model.pth"))
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="DQN Mining Environment Tester")
     parser.add_argument("--env_config", type=str, default="../../openmines/src/conf/north_pit_mine.json",
                         help="Path to environment configuration file")
+    parser.add_argument("--num_episodes", type=int, default=NUM_EPISODES, help="Number of episodes to run")
+    parser.add_argument("--max_steps", type=int, default=MAX_STEPS, help="Maximum number of steps per episode")
     args = parser.parse_args()
 
     train_dqn(args)
