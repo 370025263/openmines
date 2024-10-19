@@ -16,6 +16,9 @@ from tqdm import tqdm
 import warnings
 warnings.filterwarnings('ignore')
 
+# 导入 TensorBoard 的 SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
+
 # 导入您的环境
 from openmines.src.utils.rl_env import MineEnv
 
@@ -136,6 +139,9 @@ def train_dqn(args):
 
     steps_done = 0
 
+    # 创建 TensorBoard SummaryWriter
+    writer = SummaryWriter()
+
     def select_action(state, event_type):
         nonlocal steps_done
         eps_threshold = EPS_END + (EPS_START - EPS_END) * \
@@ -160,6 +166,10 @@ def train_dqn(args):
         state = torch.tensor([state_np], device=device, dtype=torch.float)
         event_type = torch.tensor([event_type], device=device, dtype=torch.long)
         total_reward = 0
+
+        # 用于记录每个动作的选择次数
+        action_counts = {0: {}, 1: {}, 2: {}}
+
         for t in range(MAX_STEPS):
             action = select_action(state, event_type)
             action_item = action.item()
@@ -173,6 +183,13 @@ def train_dqn(args):
 
             # 将经验存入回放缓冲区
             memory.push(state, event_type, action, reward_tensor, next_state, next_event_type, done)
+
+            # 记录动作选择次数
+            et = event_type.item()
+            if action_item in action_counts[et]:
+                action_counts[et][action_item] += 1
+            else:
+                action_counts[et][action_item] = 1
 
             state = next_state
             event_type = next_event_type
@@ -219,6 +236,22 @@ def train_dqn(args):
                 nn.utils.clip_grad_norm_(policy_net.parameters(), 1)
                 optimizer.step()
 
+                # 记录参数和梯度的平均大小
+                total_norm = 0
+                for p in policy_net.parameters():
+                    param_norm = p.data.norm(2)
+                    total_norm += param_norm.item() ** 2
+                total_norm = total_norm ** 0.5
+                writer.add_scalar('Parameters/Parameter Norm', total_norm, steps_done)
+
+                total_grad_norm = 0
+                for p in policy_net.parameters():
+                    if p.grad is not None:
+                        grad_norm = p.grad.data.norm(2)
+                        total_grad_norm += grad_norm.item() ** 2
+                total_grad_norm = total_grad_norm ** 0.5
+                writer.add_scalar('Parameters/Gradient Norm', total_grad_norm, steps_done)
+
             if done or truncated:
                 break
 
@@ -229,12 +262,23 @@ def train_dqn(args):
         if episode % TARGET_UPDATE == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
-        # 打印平均奖励
+        # 记录每个回合的平均奖励
+        writer.add_scalar('Episode Reward', total_reward, episode)
+
+        # 记录每个事件类型的动作选择频率
+        for et in action_counts:
+            total_actions = sum(action_counts[et].values())
+            if total_actions > 0:
+                action_freq = {f'Action_{a}': count / total_actions for a, count in action_counts[et].items()}
+                writer.add_scalars(f'Action Frequencies/EventType_{et}', action_freq, episode)
+
+        # 更新进度条
         if episode % 10 == 0:
             avg_reward = np.mean(episode_rewards[-10:])
             total_progress.set_postfix({'Average Reward': f'{avg_reward:.2f}'})
 
     print('Training complete')
+    writer.close()
     torch.save(policy_net.state_dict(), 'dqn_model.pth')
 
 if __name__ == '__main__':
