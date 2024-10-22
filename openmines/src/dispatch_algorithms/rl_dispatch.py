@@ -27,6 +27,7 @@ class RLDispatcher(BaseDispatcher):
         self.done = False
         # reward stuff
         self.last_production = 0
+        self.last_time = 0
 
     def _step(self, truck: Truck, mine: Mine) -> int:
         """完成队列交互"""
@@ -237,8 +238,8 @@ class RLDispatcher(BaseDispatcher):
         ## 当前可用的装载点、卸载点数量
         load_num = len(mine.load_sites)
         unload_num = len(mine.dump_sites)  # todo:装卸点的随机失效事件
-        info = {"produce_tons": mine.produce_tons, "time": mine.env.now, "load_num":load_num, "unload_num":unload_num}
-
+        info = {"produce_tons": mine.produce_tons, "time": mine.env.now, "delta_time": mine.env.now - self.last_time,"load_num":load_num, "unload_num":unload_num}
+        self.last_time = mine.env.now
         # OBSERVATION
         observation = {
             "truck_name":truck.name,
