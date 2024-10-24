@@ -28,7 +28,7 @@ LEARNING_RATE = 1e-3  # 学习率
 BATCH_SIZE = 256  # 批次大小
 MAX_STEPS = 1000  # 每个回合最大步数
 NUM_EPISODES = 1000  # 总回合数
-MEMORY_SIZE = 512*10  # 经验回放缓冲区大小
+MEMORY_SIZE = 512#*10  # 经验回放缓冲区大小
 TARGET_UPDATE = 5  # 目标网络更新频率
 EPS_START = 0.9  # 初始探索率
 EPS_END = 0.01  # 最终探索率
@@ -75,24 +75,30 @@ class DQN(nn.Module):
         )
 
     def forward(self, state, event_type, time_delta):
-        # 时间特征处理
-        time_feature = time_delta.unsqueeze(-1)
-        combined_state = torch.cat([state, time_feature], dim=1)
-        time_attention = torch.sigmoid(self.time_attention(time_delta.unsqueeze(-1)))
+        # 确保time_delta是2维的 [B,1]
+        if time_delta.dim() == 1:
+            time_delta = time_delta.unsqueeze(-1)
+        elif time_delta.dim() == 3:
+            time_delta = time_delta.squeeze(1)  # 从[B,1,1]变为[B,1]
+
+        # 时间特征处理，确保维度一致
+        time_feature = time_delta  # 已经是[B,1]了
+
+
+        combined_state = torch.cat([state, time_feature], dim=1)  # [B,state_dim+1]
+        time_attention = torch.sigmoid(self.time_attention(time_delta))  # [B,128]
 
         # 前向传播
-        x = self.ln1(torch.relu(self.fc1(combined_state)))  # 应用LayerNorm
-        x = self.ln2(torch.relu(self.fc2(x)))  # 应用LayerNorm
-        x = self.ln3(torch.relu(self.fc3(x)))  # 应用LayerNorm
+        x = self.ln1(torch.relu(self.fc1(combined_state)))
+        x = self.ln2(torch.relu(self.fc2(x)))
+        x = self.ln3(torch.relu(self.fc3(x)))
 
         x = x * time_attention
 
         # 根据batch size选择不同的处理方式
         if state.shape[0] == 1:
-            # 单个动作选择
             q_values = self.output_layers[event_type.item()](x)
         else:
-            # batch学习
             q_values = torch.stack([
                 self.output_layers[et.item()](h)
                 for et, h in zip(event_type, x)
@@ -100,10 +106,22 @@ class DQN(nn.Module):
         return q_values
 
 class ReplayMemory:
-    def __init__(self, capacity):
+    def __init__(self, capacity, device):
         self.memory = deque(maxlen=capacity)
+        self.device = device
 
     def push(self, state, event_type, action, reward, next_state, next_event_type, done, time_delta, next_time_delta):
+        # 确保所有输入都是tensor并且在正确的设备上
+        state = torch.as_tensor(state, dtype=torch.float32, device=self.device)
+        event_type = torch.as_tensor(event_type, dtype=torch.long, device=self.device)
+        action = torch.as_tensor(action, dtype=torch.long, device=self.device)
+        reward = torch.as_tensor(reward, dtype=torch.float32, device=self.device)
+        next_state = torch.as_tensor(next_state, dtype=torch.float32, device=self.device)
+        next_event_type = torch.as_tensor(next_event_type, dtype=torch.long, device=self.device)
+        done = torch.as_tensor(done, dtype=torch.bool, device=self.device)
+        time_delta = torch.as_tensor(time_delta, dtype=torch.float32, device=self.device)
+        next_time_delta = torch.as_tensor(next_time_delta, dtype=torch.float32, device=self.device)
+
         self.memory.append((state, event_type, action, reward, next_state,
                             next_event_type, done, time_delta, next_time_delta))
 
@@ -204,6 +222,8 @@ def train_dqn(args):
     ]
     env.close()
 
+
+
     # 设置设备和网络
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     policy_net = DQN(state_dim, action_dims).to(device)
@@ -212,7 +232,7 @@ def train_dqn(args):
     target_net.eval()
 
     optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE)
-    memory = ReplayMemory(MEMORY_SIZE)
+    memory = ReplayMemory(MEMORY_SIZE, device)
     writer = SummaryWriter(log_dir)
 
     steps_done = 0
@@ -240,14 +260,31 @@ def train_dqn(args):
     total_production = 0
     event_types = ['Init', 'Haul', 'Unhaul']
 
+    # 预分配内存给batch训练
+    batch_state = torch.zeros(BATCH_SIZE, state_dim, device=device)
+    batch_event_type = torch.zeros(BATCH_SIZE, dtype=torch.long, device=device)
+    batch_action = torch.zeros(BATCH_SIZE, 1, dtype=torch.long, device=device)
+    batch_reward = torch.zeros(BATCH_SIZE, 1, device=device)
+    batch_next_state = torch.zeros(BATCH_SIZE, state_dim, device=device)
+    batch_next_event_type = torch.zeros(BATCH_SIZE, dtype=torch.long, device=device)
+    batch_done = torch.zeros(BATCH_SIZE, dtype=torch.bool, device=device)
+    batch_time_delta = torch.zeros(BATCH_SIZE, 1, device=device)
+    batch_next_time_delta = torch.zeros(BATCH_SIZE, 1, device=device)
+
+    # 预分配状态和动作的内存
+    current_state = torch.zeros(1, state_dim, device=device)
+    current_event_type = torch.zeros(1, dtype=torch.long, device=device)
+    current_time_delta = torch.zeros(1, dtype=torch.float, device=device)
+
     for episode in total_progress:
         env = MineEnv.make(args.env_config, log=False, ticks=False)
         observation, _ = env.reset(seed=episode)
         state_np, event_type, time_delta, time_now = preprocess_features(observation)
 
-        state = torch.tensor([state_np], device=device, dtype=torch.float)
-        event_type = torch.tensor([event_type], device=device, dtype=torch.long)
-        time_delta_tensor = torch.tensor([time_delta], device=device, dtype=torch.float)
+        # 使用预分配的内存
+        current_state[0] = torch.tensor(state_np, device=device)
+        current_event_type[0] = event_type
+        current_time_delta[0] = time_delta
 
         total_reward = 0
         step_count = 0
@@ -260,95 +297,105 @@ def train_dqn(args):
 
         for t in range(MAX_STEPS):
             # 选择动作
-            action = select_action(state, event_type, time_delta_tensor)
+            # 使用预分配的内存选择动作
+            action = select_action(current_state, current_event_type, current_time_delta)
             action_item = action.item()
 
             # 收集ORDER数据（每5个回合）
             if episode % 5 == 0:
                 time_key = int(time_now)
-                order_dict[event_type.item()] += 1
-                if event_type.item() == 0:  # Init事件
+                order_dict[event_type] += 1
+                if event_type == 0:  # Init事件
                     load_order_dist_dict[action_item] += 1
-                elif event_type.item() == 1:  # Haul事件
+                elif event_type == 1:  # Haul事件
                     dump_order_dist_dict[action_item] += 1
-                elif event_type.item() == 2:  # Unhaul事件
+                elif event_type == 2:  # Unhaul事件
                     load_order_dist_dict[action_item] += 1
                 else:
-                    raise ValueError(f"Unknown event type: {event_type.item()}")
+                    raise ValueError(f"Unknown event type: {event_type}")
 
             # 执行动作
             observation, reward, done, truncated, _ = env.step(action_item)
-            #adjusted_reward = reward * np.exp(-TIME_SCALE * time_delta)  # delta t should not be here, i works on gamma
-            total_reward += reward  # adjusted_reward
+            total_reward += reward
             reward_time_dict[int(time_now)] = reward
 
             reward_tensor = torch.tensor([reward], device=device, dtype=torch.float32)  # adjusted_reward
 
             # 处理下一个状态
+            # 处理下一个状态，使用预分配的内存
             next_state_np, next_event_type, next_time_delta, next_time_now = preprocess_features(observation)
-            next_state = torch.tensor([next_state_np], device=device, dtype=torch.float)
-            next_event_type = torch.tensor([next_event_type], device=device, dtype=torch.long)
-            next_time_delta_tensor = torch.tensor([next_time_delta], device=device, dtype=torch.float)
+            with torch.no_grad():
+                next_state = torch.tensor([next_state_np], device=device)
+                next_event_type_tensor = torch.tensor([next_event_type], device=device)
+                next_time_delta_tensor = torch.tensor([next_time_delta], device=device)
 
             memory.push(state, event_type, action, reward_tensor, next_state,
-                        next_event_type, done, time_delta_tensor, next_time_delta_tensor)  # next_time_delta is used for gamma
+                        next_event_type, done, current_time_delta, next_time_delta_tensor)  # next_time_delta is used for gamma
 
             state = next_state
             event_type = next_event_type
-            time_delta_tensor = next_time_delta_tensor
+            current_time_delta = next_time_delta_tensor
             time_now = next_time_now
             step_count += 1
 
             # 经验回放训练
-            if len(memory) >= BATCH_SIZE:
+            if len(memory) >= BATCH_SIZE and t%100 == 0:
                 transitions = memory.sample(BATCH_SIZE)
-                batch = list(zip(*transitions))
+                # batch = list(zip(*transitions))
 
-                batch_state = torch.cat(batch[0])
-                batch_event_type = torch.cat(batch[1])
-                batch_action = torch.cat(batch[2])
-                batch_reward = torch.cat(batch[3])
-                batch_next_state = torch.cat(batch[4])
-                batch_next_event_type = torch.cat(batch[5])
-                batch_done = torch.tensor(batch[6], device=device)
-                batch_time_delta = torch.cat(batch[7])
-                batch_next_time_delta = torch.cat(batch[8])
+                # 使用预分配的内存填充batch数据
+                for i, (s, et, a, r, ns, net, d, td, ntd) in enumerate(transitions):
+                    batch_state[i] = s
+                    batch_event_type[i] = et
+                    batch_action[i] = a
+                    batch_reward[i] = r
+                    batch_next_state[i] = ns
+                    batch_next_event_type[i] = net
+                    batch_done[i] = d
+                    batch_time_delta[i] = td
+                    batch_next_time_delta[i] = ntd
 
+                # 计算current Q values
                 current_q_values = policy_net(batch_state, batch_event_type,
-                                              batch_time_delta).gather(1, batch_action)  # time attention is based on S_t - S_(t-1) time delta
-
+                                              batch_time_delta).gather(1, batch_action)
+                # 计算next state values
                 next_state_values = torch.zeros(BATCH_SIZE, device=device)
                 with torch.no_grad():
                     non_final_mask = ~batch_done
-                    non_final_next_states = batch_next_state[non_final_mask]
-                    non_final_next_event_types = batch_next_event_type[non_final_mask]
-                    non_final_next_time_deltas = batch_time_delta[non_final_mask]
-
-                    if len(non_final_next_states) > 0:
-                        next_q_values = target_net(non_final_next_states,
-                                                   non_final_next_event_types,
-                                                   non_final_next_time_deltas)
+                    if non_final_mask.any():
+                        next_q_values = target_net(
+                            batch_next_state[non_final_mask],
+                            batch_next_event_type[non_final_mask],
+                            batch_next_time_delta[non_final_mask]
+                        )
                         next_state_values[non_final_mask] = next_q_values.max(1)[0]
 
+                # 计算expected Q values
                 gamma_t = GAMMA ** batch_next_time_delta.squeeze().float()  # gamma^delta_t. here is S_(t+1) - S_t time delta
                 expected_q_values = (next_state_values * gamma_t) + batch_reward.squeeze()
 
+                # 计算loss并更新
                 loss = nn.MSELoss()(current_q_values.squeeze(), expected_q_values)
                 optimizer.zero_grad()
                 loss.backward()
                 nn.utils.clip_grad_norm_(policy_net.parameters(), 1)
                 optimizer.step()
 
-                writer.add_scalar('Training/Loss', loss.item(), steps_done)
+            # 更新当前状态
+            current_state[0] = torch.tensor(next_state_np, device=device)
+            current_event_type[0] = next_event_type
+            current_time_delta[0] = next_time_delta
+            time_now = next_time_now
+            step_count += 1
 
             if done or truncated:
                 break
 
         # 0. total length
         writer.add_scalar('Episode/Length', sum(order_dict), global_step=episode)
+        writer.add_scalar('Training/Loss', loss.item(), global_step=episode)
         # 每5个回合创建比较图表
         if episode % 5 == 0:
-
             # 1. 记录TOTAL ORDER分布 ON TYPE
             # 如果你想看到总的订单比例分布
             writer.add_scalars(
