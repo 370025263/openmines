@@ -25,14 +25,14 @@ from openmines.src.utils.rl_env import MineEnv
 GAMMA = 0.999  # 折扣因子
 TIME_SCALE = 1  # 时间衰减系数 X
 LEARNING_RATE = 1e-3  # 学习率
-BATCH_SIZE = 1000  # 批次大小
+BATCH_SIZE = 256  # 批次大小
 MAX_STEPS = 1000  # 每个回合最大步数
-NUM_EPISODES = 500  # 总回合数
-MEMORY_SIZE = 10000  # 经验回放缓冲区大小
-TARGET_UPDATE = 3  # 目标网络更新频率
-EPS_START = 0.8  # 初始探索率
+NUM_EPISODES = 1000  # 总回合数
+MEMORY_SIZE = 512*10  # 经验回放缓冲区大小
+TARGET_UPDATE = 5  # 目标网络更新频率
+EPS_START = 0.9  # 初始探索率
 EPS_END = 0.01  # 最终探索率
-EPS_DECAY = 500  # 探索率衰减速度
+EPS_DECAY = 1000*100  # 探索率衰减速度
 
 def generate_run_id():
     """生成唯一的运行ID"""
@@ -44,37 +44,55 @@ def generate_run_color():
     """生成随机颜色"""
     return "#{:06x}".format(random.randint(0, 0xFFFFFF))
 
+
 class DQN(nn.Module):
     def __init__(self, state_dim, action_dims):
         super(DQN, self).__init__()
         self.input_dim = state_dim + 1  # 状态维度 + 时间特征
 
+        # 全连接层
         self.fc1 = nn.Linear(self.input_dim, 256)
-        self.fc2 = nn.Linear(256, 256)
-        self.fc3 = nn.Linear(256, 128)
+        self.ln1 = nn.LayerNorm(256)  # 添加LayerNorm
 
+        self.fc2 = nn.Linear(256, 256)
+        self.ln2 = nn.LayerNorm(256)  # 添加LayerNorm
+
+        self.fc3 = nn.Linear(256, 128)
+        self.ln3 = nn.LayerNorm(128)  # 添加LayerNorm
+
+        # 输出层
         self.output_layers = nn.ModuleList([
-            nn.Linear(128, dim) for dim in action_dims
+            nn.Sequential(
+                nn.Linear(128, dim),
+                nn.LayerNorm(dim)  # 为每个输出层添加LayerNorm
+            ) for dim in action_dims
         ])
 
-        self.time_attention = nn.Linear(1, 128)
+        # 时间注意力
+        self.time_attention = nn.Sequential(
+            nn.Linear(1, 128),
+            nn.LayerNorm(128)  # 为时间注意力添加LayerNorm
+        )
 
     def forward(self, state, event_type, time_delta):
+        # 时间特征处理
         time_feature = time_delta.unsqueeze(-1)
         combined_state = torch.cat([state, time_feature], dim=1)
         time_attention = torch.sigmoid(self.time_attention(time_delta.unsqueeze(-1)))
 
-        x = torch.relu(self.fc1(combined_state))
-        x = torch.relu(self.fc2(x))
-        x = torch.relu(self.fc3(x))
+        # 前向传播
+        x = self.ln1(torch.relu(self.fc1(combined_state)))  # 应用LayerNorm
+        x = self.ln2(torch.relu(self.fc2(x)))  # 应用LayerNorm
+        x = self.ln3(torch.relu(self.fc3(x)))  # 应用LayerNorm
 
         x = x * time_attention
 
+        # 根据batch size选择不同的处理方式
         if state.shape[0] == 1:
-            # ACT
+            # 单个动作选择
             q_values = self.output_layers[event_type.item()](x)
         else:
-            # BATCH LEARN
+            # batch学习
             q_values = torch.stack([
                 self.output_layers[et.item()](h)
                 for et, h in zip(event_type, x)
@@ -206,6 +224,7 @@ def train_dqn(args):
                         np.exp(-1. * steps_done / EPS_DECAY)
         steps_done += 1
 
+        writer.add_scalar('Training/Epsilon', eps_threshold, steps_done)
         if random.random() < eps_threshold:
             return torch.tensor([[random.randrange(action_dims[event_type.item()])]],
                                 device=device, dtype=torch.long)
@@ -237,7 +256,7 @@ def train_dqn(args):
         load_order_dist_dict = [0 for site_index in range(observation['info']['load_num'])]
         dump_order_dist_dict = [0 for site_index in range(observation['info']['unload_num'])]
 
-        reward_time_dict = defaultdict(list)
+        reward_time_dict = defaultdict(int)
 
         for t in range(MAX_STEPS):
             # 选择动作
@@ -261,7 +280,7 @@ def train_dqn(args):
             observation, reward, done, truncated, _ = env.step(action_item)
             #adjusted_reward = reward * np.exp(-TIME_SCALE * time_delta)  # delta t should not be here, i works on gamma
             total_reward += reward  # adjusted_reward
-            reward_time_dict[int(time_now)].append(reward)
+            reward_time_dict[int(time_now)] = reward
 
             reward_tensor = torch.tensor([reward], device=device, dtype=torch.float32)  # adjusted_reward
 
@@ -325,23 +344,31 @@ def train_dqn(args):
             if done or truncated:
                 break
 
+        # 0. total length
+        writer.add_scalar('Episode/Length', sum(order_dict), global_step=episode)
         # 每5个回合创建比较图表
         if episode % 5 == 0:
-            # 1. 记录TOTAL ORDER分布 ON TYPE
-            for evt_type in range(3):
-                writer.add_histogram(
-                    f'Orders',
-                    np.array(order_dict),
-                    global_step=episode
-                )
 
+            # 1. 记录TOTAL ORDER分布 ON TYPE
+            # 如果你想看到总的订单比例分布
+            writer.add_scalars(
+                'Orders/Distribution',
+                {
+                    'Init': order_dict[0],
+                    'Haul': order_dict[1],
+                    'Unhaul': order_dict[2]
+                },
+                global_step=episode
+            )
 
             # 2. 记录奖励分布
-            writer.add_histogram(
-                f'Rewards',
-                np.array([reward_time_dict[t] for t in sorted(reward_time_dict.keys())]),
-                episode
-            )
+            # 对每个时间点分别记录奖励
+            for t, reward in reward_time_dict.items():
+                writer.add_scalar(
+                    f'Rewards/Episode_{episode}',  # 每个episode一条曲线
+                    reward,  # 该时间点的奖励值
+                    global_step=t  # x轴是时间步
+                )
 
             # 3. 记录站点分布
             # 装载点分布
@@ -355,6 +382,35 @@ def train_dqn(args):
                 f'ORDER/DumpSite',
                 np.array(dump_order_dist_dict),
                 episode
+            )
+            # 对于装载点
+            for site_idx in range(len(load_order_dist_dict)):
+                writer.add_scalar(
+                    f'LoadSite/Site_{site_idx}',  # 每个装载点一条曲线
+                    load_order_dist_dict[site_idx],  # 该装载点在当前episode的订单数
+                    global_step=episode
+                )
+
+            # 也可以用add_scalars将所有装载点放在同一个图中
+            writer.add_scalars(
+                'LoadSites/All',
+                {f'Site_{i}': count for i, count in enumerate(load_order_dist_dict)},
+                global_step=episode
+            )
+
+            # 对于卸载点
+            for site_idx in range(len(dump_order_dist_dict)):
+                writer.add_scalar(
+                    f'DumpSite/Site_{site_idx}',  # 每个卸载点一条曲线
+                    dump_order_dist_dict[site_idx],  # 该卸载点在当前episode的订单数
+                    global_step=episode
+                )
+
+            # 同样可以用add_scalars将所有卸载点放在同一个图中
+            writer.add_scalars(
+                'DumpSites/All',
+                {f'Site_{i}': count for i, count in enumerate(dump_order_dist_dict)},
+                global_step=episode
             )
 
         episode_rewards.append(total_reward)
