@@ -78,25 +78,27 @@ class Truck:
         # RL
         self.current_decision_event = None
 
-    def get_location_index(self):
-        """获取车辆当前地点的标号
+    def get_location_onehot(self):
+        """获取车辆当前地点的标号, one-hot
         """
-        if isinstance(self.current_location, DumpSite) and isinstance(self.target_location, LoadSite):
-            event_name = "unhaul"
-            for i, load_site in enumerate(self.mine.load_sites):
-                if load_site.name == self.current_location:
-                    return i
+        charge_pos, load_pos, dump_pos = [0],[0]*len(self.mine.load_sites),[0]*len(self.mine.dump_sites)
+        if isinstance(self.current_location, DumpSite):
+            event_name = "unhaul"  # at dump site
+            for i, dump_site in enumerate(self.mine.dump_sites):
+                if dump_site.name == self.current_location.name:
+                    dump_pos[i] = 1
+                    return charge_pos + load_pos + dump_pos
         elif isinstance(self.current_location, ChargingSite):
-            event_name = "init"
-            for i, load_site in enumerate(self.mine.load_sites):
-                if load_site.name == self.current_location:
-                    return i
+            event_name = "init" # at charge site
+            charge_pos[0] = 1
+            return  charge_pos + load_pos + dump_pos
         else:
-            event_name = "haul"
-            for i, load_site in enumerate(self.mine.dump_sites):
-                if load_site.name == self.current_location:
-                    return i
-        return None
+            event_name = "haul"  # at load site
+            for i, load_site in enumerate(self.mine.load_sites):
+                if load_site.name == self.current_location.name:
+                    load_pos[i] = 1
+                    return charge_pos + load_pos + dump_pos
+        return charge_pos + load_pos + dump_pos
 
     def set_env(self, mine:"Mine"):
         self.mine = mine

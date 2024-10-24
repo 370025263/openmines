@@ -140,7 +140,7 @@ class RLDispatcher(BaseDispatcher):
         # 当前车的状态
         the_truck_status = {
             "truck_location": truck.current_location.name,
-            "truck_location_index": truck.get_location_index(),
+            "truck_location_onehot": truck.get_location_onehot(),
 
             "truck_load": truck.truck_load,
             "truck_capacity": truck.truck_capacity,
@@ -148,50 +148,35 @@ class RLDispatcher(BaseDispatcher):
             "truck_cycle_time": truck.truck_cycle_time,
             "truck_speed": truck.truck_speed,
         }
-        # 目标地点状态
-        if isinstance(truck.current_location, DumpSite) and isinstance(truck.target_location, LoadSite):
-            event_name = "unhaul"
-            target_status = {
-                # stats and digits
-                "queue_lengths": [load_site.parking_lot.queue_status["total"]["cur_value"] for load_site in mine.load_sites],
-                "capacities": [load_site.load_site_productivity for load_site in mine.load_sites],
-                "est_wait": [load_site.estimated_queue_wait_time for load_site in mine.load_sites],
 
-                # summary info
-                "produced_tons": [load_site.produced_tons for load_site in mine.load_sites],
-                "service_counts": [load_site.service_count for load_site in mine.load_sites],
-            }
+        # 目标地点状态
+        if isinstance(truck.current_location, DumpSite):  # and isinstance(truck.target_location, LoadSite):
+            event_name = "unhaul"
         elif isinstance(truck.current_location, ChargingSite):
             event_name = "init"
-            target_status = {
-                # stats and digits
-                "queue_lengths": [load_site.parking_lot.queue_status["total"]["cur_value"] for load_site in
-                                  mine.load_sites],
-                "capacities": [load_site.load_site_productivity for load_site in mine.load_sites],
-                "est_wait": [load_site.estimated_queue_wait_time for load_site in mine.load_sites],
-
-                # summary info
-                "produced_tons": [load_site.produced_tons for load_site in mine.load_sites],
-                "service_counts": [load_site.service_count for load_site in mine.load_sites],
-            }
         else:
             event_name = "haul"
-            target_status = {
-                # stats and digits
-                "queue_lengths": [dump_site.parking_lot.queue_status["total"]["cur_value"] for dump_site in mine.dump_sites],
-                "capacities": [dump_site.dump_site_productivity for dump_site in mine.dump_sites],
-                "est_wait": [dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites],
+        target_status = {
+            # stats and digits
+            "queue_lengths": [load_site.parking_lot.queue_status["total"]["cur_value"] for load_site in
+                              mine.load_sites] + [dump_site.parking_lot.queue_status["total"]["cur_value"] for dump_site in mine.dump_sites],
+            "capacities": [load_site.load_site_productivity for load_site in mine.load_sites]+[dump_site.dump_site_productivity for dump_site in mine.dump_sites],
+            "est_wait": [load_site.estimated_queue_wait_time for load_site in mine.load_sites]+[dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites],
 
-                # summary info
-                "produced_tons": [dump_site.produce_tons for dump_site in mine.dump_sites],
-                "service_counts": [dump_site.service_count for dump_site in mine.dump_sites],
-            }
+            # summary info
+            "produced_tons": [load_site.produced_tons for load_site in mine.load_sites] + [dump_site.produce_tons for dump_site in mine.dump_sites],
+            "service_counts": [load_site.service_count for load_site in mine.load_sites] + [dump_site.service_count for dump_site in mine.dump_sites],
+        }
 
         # 当前道路状态
         cur_road_status = {
             "charging2load": {"truck_count":dict(),"distances":dict(),"truck_jam_count":dict(),"repair_count":dict()},
             "load2dump": {"truck_count":dict(),"distances":dict(),"truck_jam_count":dict(),"repair_count":dict()},
             "dump2load": {"truck_count":dict(),"distances":dict(),"truck_jam_count":dict(),"repair_count":dict()},
+            "oh_truck_count": [],
+            "oh_distances": [],
+            "oh_truck_jam_count": [],
+            "oh_repair_count": [],
         }
         ## 统计初始化init过程中的道路情况
         for i in range(mine.road.load_site_num):
@@ -230,6 +215,26 @@ class RLDispatcher(BaseDispatcher):
                 cur_road_status["dump2load"]["repair_count"][(i,j)] = mine.road.road_status[(dump_site_name,load_site_name)][
                     "repair_count"]
                 cur_road_status["dump2load"]["distances"][(i, j)] = mine.road.road_matrix[j][i]
+        # One-hot encoding
+        for road_id in range(mine.road.load_site_num):
+            cur_road_status["oh_truck_count"].append(cur_road_status["charging2load"]["truck_count"][road_id])
+            cur_road_status["oh_truck_jam_count"].append(cur_road_status["charging2load"]["truck_jam_count"][road_id])
+            cur_road_status["oh_repair_count"].append(cur_road_status["charging2load"]["repair_count"][road_id])
+            cur_road_status["oh_distances"].append(cur_road_status["charging2load"]["distances"][road_id])
+
+        for i in range(mine.road.load_site_num):
+            for j in range(mine.road.dump_site_num):
+                cur_road_status["oh_truck_count"].append(cur_road_status["load2dump"]["truck_count"][(i,j)])
+                cur_road_status["oh_truck_jam_count"].append(cur_road_status["load2dump"]["truck_jam_count"][(i,j)])
+                cur_road_status["oh_repair_count"].append(cur_road_status["load2dump"]["repair_count"][(i,j)])
+                cur_road_status["oh_distances"].append(cur_road_status["load2dump"]["distances"][(i,j)])
+
+        for j in range(mine.road.dump_site_num):
+            for i in range(mine.road.load_site_num):
+                cur_road_status["oh_truck_count"].append(cur_road_status["dump2load"]["truck_count"][(i,j)])
+                cur_road_status["oh_truck_jam_count"].append(cur_road_status["dump2load"]["truck_jam_count"][(i,j)])
+                cur_road_status["oh_repair_count"].append(cur_road_status["dump2load"]["repair_count"][(i,j)])
+                cur_road_status["oh_distances"].append(cur_road_status["dump2load"]["distances"][(i,j)])
 
         # 其他车状态
         # todo: 添加其他车状态
