@@ -34,6 +34,8 @@ EPS_START = 0.9  # 初始探索率
 EPS_END = 0.01  # 最终探索率
 EPS_DECAY = 1000*100  # 探索率衰减速度
 TIME_ATTENTION = False  # 是否使用时间注意力
+MODEL_NAME = "DuelingDQN" # "DQN" or "DuelingDQN"
+
 
 def generate_run_id():
     """生成唯一的运行ID"""
@@ -106,6 +108,90 @@ class DQN(nn.Module):
                 for et, h in zip(event_type, x)
             ])
         return q_values
+
+
+class DuelingDQN(nn.Module):
+    def __init__(self, state_dim, action_dims):
+        super(DuelingDQN, self).__init__()
+        self.input_dim = state_dim + 1  # 状态维度 + 时间特征
+
+        # 特征提取层
+        self.features = nn.Sequential(
+            nn.Linear(self.input_dim, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+
+            nn.Linear(256, 256),
+            nn.LayerNorm(256),
+            nn.ReLU(),
+
+            nn.Linear(256, 128),
+            nn.LayerNorm(128),
+            nn.ReLU()
+        )
+
+        # 时间注意力层
+        self.time_attention = nn.Sequential(
+            nn.Linear(1, 128),
+            nn.LayerNorm(128)
+        )
+
+        # Value Stream - 评估状态的价值
+        self.value_stream = nn.Sequential(
+            nn.Linear(128, 64),
+            nn.LayerNorm(64),
+            nn.ReLU(),
+            nn.Linear(64, 1)  # 输出单个状态值
+        )
+
+        # Advantage Stream - 评估每个动作的优势
+        self.advantage_streams = nn.ModuleList([
+            nn.Sequential(
+                nn.Linear(128, 64),
+                nn.LayerNorm(64),
+                nn.ReLU(),
+                nn.Linear(64, dim)  # 每个事件类型对应的动作维度
+            ) for dim in action_dims
+        ])
+
+    def forward(self, state, event_type, time_delta):
+        # 确保time_delta是2维的 [B,1]
+        if time_delta.dim() == 1:
+            time_delta = time_delta.unsqueeze(-1)
+        elif time_delta.dim() == 3:
+            time_delta = time_delta.squeeze(1)
+
+        # 时间特征处理
+        time_feature = time_delta
+        combined_state = torch.cat([state, time_feature], dim=1)
+
+        # 特征提取
+        features = self.features(combined_state)
+
+        if TIME_ATTENTION:
+            time_attention = torch.sigmoid(self.time_attention(time_delta))
+            features = features * time_attention
+
+        # 计算状态值
+        values = self.value_stream(features)
+
+        # 根据batch size选择不同的处理方式
+        if state.shape[0] == 1:
+            # 单个样本处理
+            advantages = self.advantage_streams[event_type.item()](features)
+            # Q = V + (A - mean(A))
+            q_values = values + (advantages - advantages.mean(dim=1, keepdim=True))
+        else:
+            # batch处理
+            q_values = []
+            for i, et in enumerate(event_type):
+                advantages = self.advantage_streams[et.item()](features[i:i + 1])
+                q = values[i:i + 1] + (advantages - advantages.mean(dim=1, keepdim=True))
+                q_values.append(q)
+            q_values = torch.cat(q_values, dim=0)
+
+        return q_values
+
 
 class ReplayMemory:
     def __init__(self, capacity, device):
@@ -228,8 +314,15 @@ def train_dqn(args):
 
     # 设置设备和网络
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    policy_net = DQN(state_dim, action_dims).to(device)
-    target_net = DQN(state_dim, action_dims).to(device)
+
+    if MODEL_NAME == "DQN":
+        policy_net = DQN(state_dim, action_dims).to(device)
+        target_net = DQN(state_dim, action_dims).to(device)
+    elif MODEL_NAME == "DuelingDQN":
+        policy_net = DuelingDQN(state_dim, action_dims).to(device)
+        target_net = DuelingDQN(state_dim, action_dims).to(device)
+    else:
+        raise ValueError(f"Unknown model name: {MODEL_NAME}")
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
@@ -276,7 +369,7 @@ def train_dqn(args):
 
     episode_rewards = []
     episode_lengths = []
-    total_progress = tqdm(range(NUM_EPISODES), desc=f'Training DQN (Run ID: {run_id})')
+    total_progress = tqdm(range(NUM_EPISODES), desc=f'Training {MODEL_NAME} (Run ID: {run_id})')
 
     total_production = 0
     event_types = ['Init', 'Haul', 'Unhaul']
