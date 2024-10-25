@@ -22,17 +22,18 @@ from torch.utils.tensorboard import SummaryWriter
 from openmines.src.utils.rl_env import MineEnv
 
 # ===== 超参数定义 =====
-GAMMA = 0.999  # 折扣因子
+GAMMA = 1  # 折扣因子
 TIME_SCALE = 1  # 时间衰减系数 X
 LEARNING_RATE = 1e-3  # 学习率
 BATCH_SIZE = 256  # 批次大小
 MAX_STEPS = 1000  # 每个回合最大步数
 NUM_EPISODES = 1000  # 总回合数
-MEMORY_SIZE = 512#*10  # 经验回放缓冲区大小
-TARGET_UPDATE = 5  # 目标网络更新频率
+MEMORY_SIZE = 512*10  # 经验回放缓冲区大小
+TARGET_UPDATE = 1  # 目标网络更新频率
 EPS_START = 0.9  # 初始探索率
 EPS_END = 0.01  # 最终探索率
 EPS_DECAY = 1000*100  # 探索率衰减速度
+TIME_ATTENTION = False  # 是否使用时间注意力
 
 def generate_run_id():
     """生成唯一的运行ID"""
@@ -93,7 +94,8 @@ class DQN(nn.Module):
         x = self.ln2(torch.relu(self.fc2(x)))
         x = self.ln3(torch.relu(self.fc3(x)))
 
-        x = x * time_attention
+        if TIME_ATTENTION:
+            x = x * time_attention
 
         # 根据batch size选择不同的处理方式
         if state.shape[0] == 1:
@@ -231,9 +233,28 @@ def train_dqn(args):
     target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
-    optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE)
+    # optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE)
+    # 使用SGD with momentum
+    optimizer = optim.SGD(
+        policy_net.parameters(),
+        lr=LEARNING_RATE,  # SGD通常需要比Adam大的学习率
+        momentum=0.9,  # 动量项
+        weight_decay=1e-4  # L2正则化
+    )
+
     memory = ReplayMemory(MEMORY_SIZE, device)
     writer = SummaryWriter(log_dir)
+
+    # hyperparameters
+    writer.add_text(f'Hyperparameters/gamma', str(GAMMA))
+    writer.add_text(f'Hyperparameters/learning_rate', str(LEARNING_RATE))
+    writer.add_text(f'Hyperparameters/time_scale', str(TIME_SCALE))
+    writer.add_text(f'Hyperparameters/batch_size', str(BATCH_SIZE))
+    writer.add_text(f'Hyperparameters/memory_size', str(MEMORY_SIZE))
+    writer.add_text(f'Hyperparameters/eps_start', str(EPS_START))
+    writer.add_text(f'Hyperparameters/eps_end', str(EPS_END))
+    writer.add_text(f'Hyperparameters/eps_decay', str(EPS_DECAY))
+    writer.add_text(f'Hyperparameters/TIME_ATTENTION', str(TIME_ATTENTION))
 
     steps_done = 0
 
@@ -378,22 +399,25 @@ def train_dqn(args):
                 loss = nn.MSELoss()(current_q_values.squeeze(), expected_q_values)
                 optimizer.zero_grad()
                 loss.backward()
-                nn.utils.clip_grad_norm_(policy_net.parameters(), 1)
+                nn.utils.clip_grad_norm_(policy_net.parameters(), 1)  # 梯度裁剪
                 optimizer.step()
+                writer.add_scalar('Training/Loss', loss.item(), global_step=episode)
+                # Q value stuff
+                writer.add_scalar('Training/QMax', current_q_values.max().item(), global_step=episode)
+                writer.add_scalar('Training/QMin', current_q_values.min().item(), global_step=episode)
+                writer.add_scalar('Training/QMean', current_q_values.mean().item(), global_step=episode)
 
             # 更新当前状态
             current_state[0] = torch.tensor(next_state_np, device=device)
             current_event_type[0] = next_event_type
             current_time_delta[0] = next_time_delta
             time_now = next_time_now
-            step_count += 1
 
             if done or truncated:
                 break
 
         # 0. total length
         writer.add_scalar('Episode/Length', sum(order_dict), global_step=episode)
-        writer.add_scalar('Training/Loss', loss.item(), global_step=episode)
         # 每5个回合创建比较图表
         if episode % 5 == 0:
             # 1. 记录TOTAL ORDER分布 ON TYPE
@@ -463,6 +487,7 @@ def train_dqn(args):
         episode_rewards.append(total_reward)
         episode_lengths.append(step_count)
 
+        # Fixed Q-targets: V. Mnih et al., "Human-level control through deep reinforcement learning." Nature, 518 (7540):529–533, 2015.
         if episode % TARGET_UPDATE == 0:
             target_net.load_state_dict(policy_net.state_dict())
 
