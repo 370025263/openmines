@@ -11,6 +11,7 @@ import os
 import time
 from datetime import datetime
 
+import numpy as np
 import simpy,logging,math
 from functools import reduce
 from multiprocessing import Queue
@@ -118,19 +119,61 @@ class Mine:
             """
             2.监控道路的状态
             """
-            cur_time = env.now
-            # 获取mine的路网
-            road = self.road
-            charging_to_load_road = road.charging_to_load
-            road_matrix = road.road_matrix
-            # 获取每条路的状态
-            road_status = dict()
-            ## 统计初始化init过程中的道路情况
-            for i in range(self.road.load_site_num):
-                charging_site_name = self.charging_site.name
-                load_site_name = self.load_sites[i].name
-                road_status[(charging_site_name, load_site_name)] = {"truck_jam_count": 0, "repair_count": 0,
+            self.update_road_status(env, monitor=True)
+            # 等待下一个监控时间点
+            yield env.timeout(monitor_interval)
+
+    def update_road_status(self, env, monitor=False):
+        cur_time = env.now
+        # 获取mine的路网
+        road = self.road
+        charging_to_load_road = road.charging_to_load
+        road_matrix = road.road_matrix
+        # 获取每条路的状态
+        road_status = dict()
+        ## 统计初始化init过程中的道路情况
+        for i in range(self.road.load_site_num):
+            charging_site_name = self.charging_site.name
+            load_site_name = self.load_sites[i].name
+            road_status[(charging_site_name, load_site_name)] = {"truck_jam_count": 0, "repair_count": 0,
                                                                  "truck_count": 0}
+            # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
+            ## 获取jam事件
+            jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
+            for jam_event in jam_events:
+                """
+                info={"name": self.name, "status": "jam", "speed": 0,
+                                                      "start_location": self.current_location.name,
+                                                        "end_location": self.target_location.name,
+                                                      "start_time": self.env.now, "est_end_time":
+                """
+                if jam_event.info["start_location"] == charging_site_name and jam_event.info[
+                    "end_location"] == load_site_name \
+                        and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
+                    road_status[(charging_site_name, load_site_name)]["truck_jam_count"] += 1
+            ## 获取repair事件
+            repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
+            for repair_event in repair_events:
+                if repair_event.info["start_location"] == charging_site_name and repair_event.info[
+                    "end_location"] == load_site_name \
+                        and repair_event.info["repair_start_time"] <= cur_time and repair_event.info[
+                    "repair_end_time"] >= cur_time:
+                    road_status[(charging_site_name, load_site_name)]["repair_count"] += 1
+            ## 统计道路上的truck
+            for truck in self.trucks:
+                if not truck.current_location:
+                    continue
+                if truck.current_location.name == charging_site_name and truck.target_location.name == load_site_name:
+                    road_status[(charging_site_name, load_site_name)]["truck_count"] += 1
+
+        ## 统计haul过程中的道路情况
+        for i in range(self.road.load_site_num):
+            for j in range(self.road.dump_site_num):
+                load_site_name = self.load_sites[i].name
+                dump_site_name = self.dump_sites[j].name
+                road_status[(load_site_name, dump_site_name)] = {"truck_jam_count": 0, "repair_count": 0,
+                                                                 "truck_count": 0}
+
                 # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
                 ## 获取jam事件
                 jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
@@ -141,83 +184,57 @@ class Mine:
                                                             "end_location": self.target_location.name,
                                                           "start_time": self.env.now, "est_end_time":
                     """
-                    if jam_event.info["start_location"] == charging_site_name and jam_event.info[
-                        "end_location"] == load_site_name \
+                    if jam_event.info["start_location"] == load_site_name and jam_event.info[
+                        "end_location"] == dump_site_name \
                             and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                        road_status[(charging_site_name, load_site_name)]["truck_jam_count"] += 1
+                        road_status[(load_site_name, dump_site_name)]["truck_jam_count"] += 1
                 ## 获取repair事件
                 repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
                 for repair_event in repair_events:
-                    if repair_event.info["start_location"] == charging_site_name and repair_event.info[
+                    if repair_event.info["start_location"] == load_site_name and repair_event.info[
+                        "end_location"] == dump_site_name \
+                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info[
+                        "repair_end_time"] >= cur_time:
+                        road_status[(load_site_name, dump_site_name)]["repair_count"] += 1
+                ## 统计道路上的truck
+                for truck in self.trucks:
+                    if not truck.current_location:
+                        continue
+                    if truck.current_location.name == load_site_name and truck.target_location.name == dump_site_name:
+                        road_status[(load_site_name, dump_site_name)]["truck_count"] += 1
+
+        ## 统计unhaul过程中的道路情况
+        for j in range(self.road.dump_site_num):
+            for i in range(self.road.load_site_num):
+                load_site_name = self.load_sites[i].name
+                dump_site_name = self.dump_sites[j].name
+                road_status[(dump_site_name, load_site_name)] = {"truck_jam_count": 0, "repair_count": 0,
+                                                                 "truck_count": 0}
+
+                # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
+                ## 获取jam事件
+                jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
+                for jam_event in jam_events:
+                    if jam_event.info["start_location"] == dump_site_name and jam_event.info[
+                        "end_location"] == load_site_name \
+                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
+                        road_status[(dump_site_name, load_site_name)]["truck_jam_count"] += 1
+                ## 获取repair事件
+                repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
+                for repair_event in repair_events:
+                    if repair_event.info["start_location"] == dump_site_name and repair_event.info[
                         "end_location"] == load_site_name \
                             and repair_event.info["repair_start_time"] <= cur_time and repair_event.info[
                         "repair_end_time"] >= cur_time:
-                        road_status[(charging_site_name, load_site_name)]["repair_count"] += 1
+                        road_status[(dump_site_name, load_site_name)]["repair_count"] += 1
                 ## 统计道路上的truck
                 for truck in self.trucks:
-                    if truck.current_location == charging_site_name and truck.target_location == load_site_name:
-                        road_status[(charging_site_name, load_site_name)]["truck_count"] += 1
+                    if not truck.current_location:
+                        continue
+                    if truck.current_location.name == dump_site_name and truck.target_location.name == load_site_name:
+                        road_status[(dump_site_name, load_site_name)]["truck_count"] += 1
 
-            ## 统计haul过程中的道路情况
-            for i in range(self.road.load_site_num):
-                for j in range(self.road.dump_site_num):
-                    load_site_name = self.load_sites[i].name
-                    dump_site_name = self.dump_sites[j].name
-                    road_status[(load_site_name, dump_site_name)] = {"truck_jam_count": 0, "repair_count": 0, "truck_count": 0}
-
-                    # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
-                    ## 获取jam事件
-                    jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
-                    for jam_event in jam_events:
-                        """
-                        info={"name": self.name, "status": "jam", "speed": 0,
-                                                              "start_location": self.current_location.name,
-                                                                "end_location": self.target_location.name,
-                                                              "start_time": self.env.now, "est_end_time":
-                        """
-                        if jam_event.info["start_location"] == load_site_name and jam_event.info["end_location"] == dump_site_name \
-                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                            road_status[(load_site_name, dump_site_name)]["truck_jam_count"] += 1
-                    ## 获取repair事件
-                    repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
-                    for repair_event in repair_events:
-                        if repair_event.info["start_location"] == load_site_name and repair_event.info["end_location"] == dump_site_name \
-                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info["repair_end_time"] >= cur_time:
-                            road_status[(load_site_name, dump_site_name)]["repair_count"] += 1
-                    ## 统计道路上的truck
-                    for truck in self.trucks:
-                        if truck.current_location == load_site_name and truck.target_location == dump_site_name:
-                            road_status[(load_site_name, dump_site_name)]["truck_count"] += 1
-
-            ## 统计unhaul过程中的道路情况
-            for j in range(self.road.dump_site_num):
-                for i in range(self.road.load_site_num):
-                    load_site_name = self.load_sites[i].name
-                    dump_site_name = self.dump_sites[j].name
-                    road_status[(dump_site_name,load_site_name)] = {"truck_jam_count": 0, "repair_count": 0, "truck_count": 0}
-
-                    # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
-                    ## 获取jam事件
-                    jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
-                    for jam_event in jam_events:
-                        if jam_event.info["start_location"] == dump_site_name and jam_event.info["end_location"] == load_site_name \
-                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                            road_status[(dump_site_name,load_site_name)]["truck_jam_count"] += 1
-                    ## 获取repair事件
-                    repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
-                    for repair_event in repair_events:
-                        if repair_event.info["start_location"] == dump_site_name and repair_event.info["end_location"] == load_site_name \
-                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info["repair_end_time"] >= cur_time:
-                            road_status[(dump_site_name,load_site_name)]["repair_count"] += 1
-                    ## 统计道路上的truck
-                    for truck in self.trucks:
-                        if truck.current_location == dump_site_name and truck.target_location == load_site_name:
-                            road_status[(dump_site_name,load_site_name)]["truck_count"] += 1
-
-            self.road.road_status = road_status
-
-            # 等待下一个监控时间点
-            yield env.timeout(monitor_interval)
+        self.road.road_status = road_status
 
     def add_load_site(self, load_site:LoadSite):
         load_site.set_env(self.env)
@@ -347,6 +364,9 @@ class Mine:
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
         self.mine_logger.info("simulation started")
+        # log in the truck as process
+        for truck in self.trucks:
+            self.env.process(truck.run())
         # start some monitor process for summary
         for load_site in self.load_sites:
             # 对停车场队列的监控
@@ -377,9 +397,7 @@ class Mine:
                 self.env.process(dumper.monitor_status(env=self.env))
         # 对矿山整体监控
         self.env.process(self.monitor_status(env=self.env))
-        # log in the truck as process
-        for truck in self.trucks:
-            self.env.process(truck.run())
+
         self.env.run(until=total_time)
         self.mine_logger.info("simulation finished")
         self.summary()
@@ -516,3 +534,41 @@ class Mine:
                 file_name=f'MINE-{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
 
         return ticks
+
+    @property
+    def match_factor(self):
+        # 统计MatchingFactor
+        # paper:Match factor for heterogeneous truck and loader fleets
+        shovels = [shovel for load_site in self.load_sites for shovel in load_site.shovel_list]
+        trucks = self.trucks
+        truck_cycle_time_avg = np.mean([truck.truck_cycle_time for truck in trucks])
+
+        num_trucks = len(self.trucks)
+        num_shovels = len(shovels)
+        loading_time: np.array = np.zeros((num_trucks, num_shovels))
+        for i, truck in enumerate(trucks):
+            for j, shovel in enumerate(shovels):
+                loading_time[i, j] = round((truck.truck_capacity / shovel.shovel_tons),
+                                           1) * shovel.shovel_cycle_time  # in mins
+
+        # 按行按列去重复
+        loading_time = np.unique(loading_time, axis=0)
+        unique_loading_time = np.unique(loading_time, axis=1).astype(int)
+        # 对异构铲车的子构数量进行统计
+        shovel_type_count = dict()
+        for i in range(unique_loading_time.shape[0]):  # truck type index
+            int_data = np.array(loading_time[i, :]).astype(int)
+            for value in set(int_data):
+                shovel_type_count[f'{i}_{value}'] = list(int_data).count(
+                    value)  # it means truck type i w.r.t shovel type num
+
+        # unique_loading_time = np.ones_like(unique_loading_time) + unique_loading_time
+        # 对每一行求lcm
+        lcm_load_time = np.lcm.reduce(unique_loading_time, axis=1)
+        upside_down_sum = 0
+        for i in range(unique_loading_time.shape[0]):
+            for j in range(unique_loading_time.shape[1]):
+                upside_down_sum += shovel_type_count[f'{i}_{unique_loading_time[i, j]}'] * (
+                            lcm_load_time[i] / unique_loading_time[i, j])
+        match_factor = (num_trucks * np.sum(lcm_load_time)) / (upside_down_sum * truck_cycle_time_avg)
+        return match_factor

@@ -22,15 +22,15 @@ from torch.utils.tensorboard import SummaryWriter
 from openmines.src.utils.rl_env import MineEnv
 
 # ===== 超参数定义 =====
-GAMMA = 1  # 折扣因子
+GAMMA = 0.999  # 折扣因子
 TIME_SCALE = 1  # 时间衰减系数 X
 LEARNING_RATE = 1e-3  # 学习率
 BATCH_SIZE = 256  # 批次大小
 MAX_STEPS = 1000  # 每个回合最大步数
-NUM_EPISODES = 1000  # 总回合数
+NUM_EPISODES = 20000  # 总回合数
 MEMORY_SIZE = 512*10  # 经验回放缓冲区大小
-TARGET_UPDATE = 1  # 目标网络更新频率
-EPS_START = 0.9  # 初始探索率
+TARGET_UPDATE = 5  # 目标网络更新频率
+EPS_START = 0.19  # 初始探索率
 EPS_END = 0.01  # 最终探索率
 EPS_DECAY = 1000*100  # 探索率衰减速度
 TIME_ATTENTION = False  # 是否使用时间注意力
@@ -262,6 +262,7 @@ def preprocess_features(observation):
     #print("road_traffic", road_traffic)
 
     state = np.concatenate([order_and_position.squeeze(), truck_features, target_features, road_dist, road_traffic, road_jam]) # ])  # 3+M+N+1,2,3(M+N),(M+(M+N)*2)*3
+    #state = np.concatenate([order_and_position.squeeze()])
     assert not np.isnan(state).any(), f"NaN detected in state: {state}"
     assert not np.isnan(time_delta), f"NaN detected in time_delta: {time_delta}"
     assert not np.isnan(time_now), f"NaN detected in time_now: {time_now}"
@@ -323,7 +324,16 @@ def train_dqn(args):
         target_net = DuelingDQN(state_dim, action_dims).to(device)
     else:
         raise ValueError(f"Unknown model name: {MODEL_NAME}")
-    target_net.load_state_dict(policy_net.state_dict())
+
+    # 加载预训练模型
+    if args.pretrained_path:
+        print(f"Loading pretrained model from {args.pretrained_path}")
+        checkpoint = torch.load(args.pretrained_path)
+        policy_net.load_state_dict(checkpoint['model_state_dict'])
+        target_net.load_state_dict(checkpoint['model_state_dict'])
+        print(f"Loaded pretrained model (epoch {checkpoint['epoch']}, accuracy {checkpoint['accuracy']:.4f})")
+    else:
+        target_net.load_state_dict(policy_net.state_dict())
     target_net.eval()
 
     # optimizer = optim.Adam(policy_net.parameters(), lr=LEARNING_RATE)
@@ -453,7 +463,7 @@ def train_dqn(args):
             step_count += 1
 
             # 经验回放训练
-            if len(memory) >= BATCH_SIZE and t%100 == 0:
+            if len(memory) >= BATCH_SIZE and t%500 == 0:
                 transitions = memory.sample(BATCH_SIZE)
                 # batch = list(zip(*transitions))
 
@@ -596,6 +606,7 @@ def train_dqn(args):
             avg_length = step_count
 
         total_progress.set_postfix({
+            'Reward': f'{total_reward:.2f}',
             'L10 Avg Reward': f'{avg_reward_last_10:.2f}',
             'Avg Length': f'{avg_length:.2f}',
             'Total Production': f'{total_production:.2f}'
@@ -696,6 +707,8 @@ if __name__ == '__main__':
                         help="用于评估的模型路径")
     parser.add_argument("--eval_episodes", type=int, default=10,
                         help="评估回合数")
+    parser.add_argument("--pretrained_path", type=str, default=None,
+                        help="预训练模型路径")
 
     args = parser.parse_args()
 

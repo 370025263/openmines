@@ -25,6 +25,9 @@ from openmines.src.utils.rl_env import MineEnv
 
 # 超参数定义
 GAMMA = 0.99
+# 在超参数定义区域添加
+GAE_LAMBDA = 0.95  # GAE lambda参数
+
 CLIP_EPSILON = 0.2
 CRITIC_DISCOUNT = 0.5
 ENTROPY_BETA = 0.01
@@ -71,15 +74,17 @@ class ActorCritic(nn.Module):
     def forward(self):
         raise NotImplementedError
 
-    def act(self, state, event_type):
+    def act(self, state, event_type, action=None):
         encoded_state = self.actor_encoder(state)
         action_logits = self.actor_heads[event_type](encoded_state)
-        action_probs = nn.functional.softmax(action_logits, dim=-1)
-        assert torch.isfinite(action_probs).all(), f"NaN detected in action_probs: {action_probs}"
-        dist = Categorical(action_probs)
-        action = dist.sample()
+        # action_probs = nn.functional.softmax(action_logits, dim=-1)  # 由于Categorical分布会自动进行softmax，因此不需要手动进行
+        assert torch.isfinite(action_logits).all(), f"NaN detected in action_logits: {action_logits}"
+        dist = Categorical(action_logits)
+        if action is None:
+            # 如果没有指定动作，则从分布中采样
+            action = dist.sample()
         value = self.critic(state)
-        return action, dist.log_prob(action), dist.entropy(), value, action_probs
+        return action, dist.log_prob(action), dist.entropy(), value, dist  #  action_probs
 
     def evaluate(self, state, action, event_type):
         encoded_state = self.actor_encoder(state)
@@ -101,7 +106,7 @@ class ActorCritic(nn.Module):
     def critic_parameters(self):
         return self.critic.parameters()
 
-# 内存类，用于处理变长的轨迹（修改了优势和回报的计算）
+
 class Memory:
     def __init__(self):
         self.states = []
@@ -113,6 +118,7 @@ class Memory:
         self.event_types = []
         self.action_probs = []
         self.total_production = 0
+        self.next_value = None  # 添加next_value属性
 
     def clear_memory(self):
         del self.states[:]
@@ -124,25 +130,43 @@ class Memory:
         del self.event_types[:]
         del self.action_probs[:]
         self.total_production = 0
+        self.next_value = None
 
-    # 使用蒙特卡洛方法计算回报
-    def compute_returns(self, next_value):
-        returns = []
-        R = next_value
-        for reward, is_terminal in zip(reversed(self.rewards), reversed(self.is_terminals)):
-            if is_terminal:
-                R = 0  # 如果到达终止状态，回报归零
-            R = reward + GAMMA * R
-            returns.insert(0, R)
-        return returns
+    def compute_gae(self):
+        # 转换为tensor以提高效率
+        values_tensor = torch.tensor(self.values + [self.next_value])
+        rewards_tensor = torch.tensor(self.rewards)
+        masks = torch.tensor([not done for done in self.is_terminals])
+
+        # 预分配advantages数组
+        advantages = torch.zeros_like(rewards_tensor)
+        lastgaelam = 0
+
+        for t in reversed(range(len(self.rewards))):
+            next_mask = masks[t]
+            nextvalue = values_tensor[t + 1]
+
+            delta = rewards_tensor[t] + GAMMA * nextvalue * next_mask - values_tensor[t]
+            advantages[t] = lastgaelam = delta + GAMMA * GAE_LAMBDA * next_mask * lastgaelam
+
+        returns = advantages + values_tensor[:-1]
+        return returns.numpy()
 
     def get(self):
         states = torch.stack(self.states)
         actions = torch.stack(self.actions)
         log_probs = torch.stack(self.log_probs)
         values = torch.stack(self.values).squeeze(-1)
-        returns = torch.tensor(self.compute_returns(self.values[-1].item()))
+
+        # 使用GAE计算returns和advantages
+        returns = torch.tensor(self.compute_gae())
         advantages = returns - values
+
+        # 标准化优势
+        if args.norm_adv:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        #advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
         event_types = torch.tensor(self.event_types, dtype=torch.long)
         action_probs = torch.stack(self.action_probs)
 
@@ -236,43 +260,55 @@ class PPO:
 
 # 特征预处理函数
 def preprocess_features(observation):
+    time_delta = float(observation['info']['delta_time'])
+    time_now = float(observation['info']['time'])
+
     event_name = observation['event_name']
     if event_name == "init":
-        event_type = 0
+        event_type = [1, 0, 0]
         action_space_n = observation['info']['load_num']
     elif event_name == "haul":
-        event_type = 1
+        event_type = [0, 1, 0]
         action_space_n = observation['info']['unload_num']
     else:
-        event_type = 2
+        event_type = [0, 0, 1]
         action_space_n = observation['info']['load_num']
 
-    truck_location = observation['the_truck_status']['truck_location_index']
-    if truck_location is None:
-        truck_location = 0
+    truck_location: list = observation['the_truck_status']['truck_location_onehot']  # [1,M+N+1]
+    # print("event_type", event_type)
+    # print("truck_location", truck_location)
 
-    order_and_position = np.array([event_type, truck_location, action_space_n])
-
+    order_and_position = np.array([event_type + truck_location + [action_space_n]])  # action_space_n maybe meanless
     truck_num = observation['mine_status']['truck_count']
 
     truck_features = np.array([
-        observation['the_truck_status']['truck_load'] / (observation['the_truck_status']['truck_capacity'] + 1e-8),
-        observation['the_truck_status']['truck_cycle_time'] / 1000
+        np.log(observation['the_truck_status']['truck_load'] + 1),
+        np.log(observation['the_truck_status']['truck_cycle_time'] + 1),
     ])
 
+    # range should be 0-M+N as well.
     target_features = np.concatenate([
         np.array(observation['target_status']['queue_lengths']) / (truck_num + 1e-8),
         np.log(np.array(observation['target_status']['capacities']) + 1),
         np.log(np.array(observation['target_status']['est_wait']) + 1),
-        np.log(np.array(observation['target_status']['produced_tons']) + 1),
-        np.log(np.array(observation['target_status']['service_counts']) + 1),
     ])
+    # road distances, traffic truck count
+    road_dist = np.array(observation['cur_road_status']['oh_distances'])
+    road_traffic = np.array(observation['cur_road_status']['oh_truck_jam_count'])
+    road_jam = np.array(observation['cur_road_status']['oh_truck_jam_count'])
+    # print("road_dist", road_dist)
+    # print("road_traffic", road_traffic)
 
-    state = np.concatenate([order_and_position, truck_features, target_features])
-
+    state = np.concatenate([order_and_position.squeeze(), truck_features, target_features, road_dist, road_traffic,
+                            road_jam])  # ])  # 3+M+N+1,2,3(M+N),(M+(M+N)*2)*3
+    # state = np.concatenate([order_and_position.squeeze()])
     assert not np.isnan(state).any(), f"NaN detected in state: {state}"
+    assert not np.isnan(time_delta), f"NaN detected in time_delta: {time_delta}"
+    assert not np.isnan(time_now), f"NaN detected in time_now: {time_now}"
 
-    return state, event_type
+    event_type_index = event_type.index(1)
+
+    return state, event_type_index
 
 # 收集轨迹的工作进程函数（修改了奖励的处理）
 def collect_trajectory(env_config, policy, device, process_id, trajectory_queue):
@@ -313,7 +349,7 @@ def collect_trajectory(env_config, policy, device, process_id, trajectory_queue)
     with torch.no_grad():
         next_state_tensor = torch.FloatTensor(next_state).to(device)
         _, _, _, next_value, _ = policy.act(next_state_tensor, next_event_type)
-    memory.next_value = next_value.item()
+        memory.next_value = next_value.item()
 
     trajectory_queue.put((memory, episode_reward, step + 1))
     env.close()
@@ -377,8 +413,18 @@ def main(args):
 
     total_production = 0
 
+
     for update in range(args.num_updates):
         processes = []
+
+        # learning rate annealing
+        if args.anneal_lr:
+            frac = 1.0 - (update - 1) / args.num_updates
+            ppo_agent.actor_optimizer.lr = ACTOR_LEARNING_RATE * frac
+            ppo_agent.critic_optimizer.lr = CRITIC_LEARNING_RATE * frac
+
+
+        # ROLLOUT
         for i in range(args.num_processes):
             p = mp.Process(target=collect_trajectory,
                            args=(args.env_config, ppo_agent.policy_old, device, i, trajectory_queue))

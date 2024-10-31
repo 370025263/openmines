@@ -81,8 +81,13 @@ class FixedGroupDispatcher(BaseDispatcher):
         :param mine:
         :return:
         """
+        if self.group_solution is None:
+            self.compute_solution(mine)
+
         current_location = truck.current_location
-        assert isinstance(current_location, LoadSite), "current_location is not a LoadSite"
+        if not isinstance(current_location, LoadSite):
+            raise ValueError(f"Truck {truck.name} is not at a LoadSite: {current_location.name}")
+        assert isinstance(current_location, LoadSite), f"current_location is not a LoadSite: {current_location.name}"
         cur_index = mine.load_sites.index(current_location)
         cur_to_dump = mine.road.road_matrix[cur_index, :]
         min_index = cur_to_dump.argmin()
@@ -95,6 +100,9 @@ class FixedGroupDispatcher(BaseDispatcher):
         :param mine:
         :return:
         """
+        if self.group_solution is None:
+            self.compute_solution(mine)
+
         for load_site_name, info in self.group_solution.items():
             if truck in info["trucks"]:
                 return mine.load_sites.index([ls for ls in mine.load_sites if ls.name == load_site_name][0])

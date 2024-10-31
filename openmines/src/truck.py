@@ -317,6 +317,7 @@ class Truck:
             dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
         self.first_order_time = self.env.now
         self.target_location = self.mine.load_sites[dest_load_index]
+        self.mine.update_road_status(self.env)  # manually update road status, since the monitor didn't start yet
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
@@ -368,6 +369,7 @@ class Truck:
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
             self.status = "waiting for haul order"
+            self.mine.update_road_status(self.env)  # manually update road status, since the monitor may not distinguish the order at same integer time
             if is_rl_training:
                 # 等待RL agent给出决策;
                 dest_unload_index: int = yield self.env.process(self.wait_for_decision())
@@ -428,6 +430,7 @@ class Truck:
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
             self.target_location = dest_load_site
+            self.mine.update_road_status(self.env)  # manually update road status, since the monitor didn't start yet
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
