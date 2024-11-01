@@ -14,6 +14,9 @@ class Dumper:
         self.service_count = 0
         self.dump_time = dumper_cycle_time  # shovel-vehicle time took for one shovel of mine
         self.status = dict()  # the status of shovel
+        self.last_service_time = 0  # the last service time of shovel, the moment that the shovel start loading a truck
+        self.last_service_done_time = 0  # the last service done time of shovel, the moment that the shovel finish loading a truck
+        self.est_waiting_time = 0  # the estimated waiting time for the next truck
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -42,7 +45,15 @@ class DumpSite:
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
+        self.avg_queue_wait_time = 0  # the average waiting time for coming trucks in queue
         self.dump_site_productivity = 0
+        # service_time = min service time
+        self.last_service_time = 0  # 上一次服务Start时间
+        self.last_service_done_time = 0  # 上一次服务End时间
+
+    def update_service_time(self):
+        self.last_service_time = min([dumper.last_service_time for dumper in self.dumper_list])
+        self.last_service_done_time = min([dumper.last_service_done_time for dumper in self.dumper_list])
 
     def set_env(self, env:simpy.Environment):
         self.env = env

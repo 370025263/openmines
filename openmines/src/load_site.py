@@ -5,7 +5,9 @@ class ParkingLot:
         self.name = name
         self.position = position
         self.queue_status = dict()
-
+        self.resources = []
+        self.res_objs = []
+        self.env = None
 
     def get_waiting_trucks(self, resource_list:list[simpy.Resource])->int:
         waiting_trucks = []
@@ -13,48 +15,70 @@ class ParkingLot:
             waiting_trucks += resource.queue
         return len(waiting_trucks)
 
+    def update_queue_wait_status(self):
+        # Get Reference
+        res_objs = self.res_objs
+        resources = self.resources
+        env = self.env
+        # 统计预期等待时间
+        # 获取自定义请求包含的信息
+        for index, res_obj in enumerate(res_objs):  # 遍历shovel或dumper对象: eg. shovels or dumpers
+            res_name = res_obj.name
+            # 如果是铲车，那就对铲车队列等待时间进行统计(shovel.est_waiting_time)
+            if res_obj.type == "shovel":
+                shovel_name = res_obj.name
+                shovel_tons = res_obj.shovel_tons
+                shovel_cycle_time = res_obj.shovel_cycle_time
+                shovel_queue_wait_total_time = 0
+                shovel_last_service_time = res_obj.last_service_time  # Shovel上一次服务时间
+                for i, load_request in enumerate(resources[index].queue):  # 遍历某铲车的装载请求
+                    truck = load_request.truck
+                    load_site = load_request.load_site
+                    shovel_queue_wait_total_time += (truck.truck_capacity / res_obj.shovel_tons) * res_obj.shovel_cycle_time
+                time_used_loading = env.now - shovel_last_service_time
+                shovel_estimated_waiting_time = (shovel_queue_wait_total_time - time_used_loading) if shovel_queue_wait_total_time > time_used_loading else 0
+                res_obj.est_waiting_time = shovel_estimated_waiting_time  # 铲车的预期等待时间
+                assert time_used_loading >= 0, "Time used for loading should be greater than 0"
+            # 如果是dumper，那就对dumper队列等待时间进行统计(dumper.est_waiting_time)
+            if res_obj.type == "dumper":
+                dumper_name = res_obj.name
+                dumper_cycle_time = res_obj.dump_time
+                dumper_queue_wait_total_time = 0
+                dumper_last_service_time = res_obj.last_service_time  # Dumper上一次服务时间
+                for i, dump_request in enumerate(resources[index].queue):  # 遍历某dumper的卸载请求
+                    truck = dump_request.truck
+                    dump_site = dump_request.dump_site
+                    dumper_queue_wait_total_time += res_obj.dump_time
+                time_used_dumping = env.now - dumper_last_service_time
+                dumper_estimated_waiting_time = (dumper_queue_wait_total_time - time_used_dumping) if dumper_queue_wait_total_time > time_used_dumping else 0
+                res_obj.est_waiting_time = dumper_estimated_waiting_time  # Dumper的预期等待时间
+                assert time_used_dumping >= 0, "Time used for dumping should be greater than 0"
+
+        # UPDATE LOAD_SITE AND DUMP_SITE(from the summary by each shovel and dumper, take the mini)
+        if res_objs and res_objs[-1].type == "shovel":
+            load_site = res_objs[-1].load_site
+            load_site.estimated_queue_wait_time = min([shovel.est_waiting_time for shovel in res_objs])  # 装载区的平均等待时间
+            load_site.avg_queue_wait_time = sum([shovel.est_waiting_time for shovel in res_objs]) / len(res_objs)
+        if res_objs and res_objs[-1].type == "dumper":
+            dump_site = res_objs[-1].dump_site
+            dump_site.estimated_queue_wait_time = min([dumper.est_waiting_time for dumper in res_objs])  # 卸载区的平均等待时间
+            dump_site.avg_queue_wait_time = sum([dumper.est_waiting_time for dumper in res_objs]) / len(res_objs)
+
     def monitor_resources(self, env, resources, res_objs, monitor_interval=1):
         """监控停车场对应所有资源的排队长度
             可以做到铲子、dumper单体级别的排队长度
         """
+        self.res_objs = res_objs
+        self.resources = resources
+        self.env = env
+
         self.queue_status["total"] = dict()
         while True:
             # 记录当前的排队长度
             all_queue_len = sum([len(resource.queue) for resource in resources])
             self.queue_status["total"][int(env.now)] = all_queue_len
             self.queue_status["total"]["cur_value"] = all_queue_len
-            # 统计预期等待时间
-            # 获取自定义请求包含的信息
-            for index,res_obj in enumerate(res_objs):  # 遍历铲车或dumper对象
-                res_name = res_obj.name
-                load_time_list = []  # 当前装载点所有铲车的队列装载时间
-                dump_time_list = []  # 当前卸载点所有dumper的队列卸载时间
-                # 如果是铲车，那就对铲车队列等待时间进行统计
-                if res_obj.type == "shovel":
-                    shovel_name = res_obj.name
-                    shovel_tons = res_obj.shovel_tons
-                    shovel_cycle_time = res_obj.shovel_cycle_time
-                    truck_load_time = 0
-                    for i,load_request in enumerate(resources[index].queue):  # 遍历某铲车的装载请求
-                        truck = load_request.truck
-                        load_site = load_request.load_site
-                        truck_load_time += (truck.truck_capacity / res_obj.shovel_tons) * res_obj.shovel_cycle_time
-                    load_time_list.append(truck_load_time)  # 一个铲车的所有装载时间之和
-                # 如果是dumper，那就对dumper队列等待时间进行统计
-                if res_obj.type == "dumper":
-                    dumper_name = res_obj.name
-                    dumper_cycle_time = res_obj.dump_time
-                    # 计算队列等待时间
-                    dumper_queue_estimated_time = len(resources[index].queue)* dumper_cycle_time
-                    dump_time_list.append(dumper_queue_estimated_time)
-            if res_objs[-1].type == "shovel":
-                EWA_LOAD_TIME = sum(load_time_list) / len(load_time_list)  # 装载区的平均等待时间
-                load_site = res_objs[-1].load_site
-                load_site.estimated_queue_wait_time = EWA_LOAD_TIME
-            if res_objs[-1].type == "dumper":
-                EWA_DUMP_TIME = sum(dump_time_list) / len(dump_time_list)  # dumpsite的平均卸载时间
-                dump_site = res_objs[-1].dump_site
-                dump_site.estimated_queue_wait_time = EWA_DUMP_TIME
+            self.update_queue_wait_status()
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
@@ -88,6 +112,9 @@ class Shovel:
         self.service_count = 0  # the number of shovel-vehicle cycle
         self.shovel_cycle_time = shovel_cycle_time  # shovel-vehicle time took for one shovel of mine
         self.status = dict()  # the status of shovel
+        self.last_service_time = 0  # the last service time of shovel, the moment that the shovel start loading a truck
+        self.last_service_done_time = 0  # the last service done time of shovel, the moment that the shovel finish loading a truck
+        self.est_waiting_time = 0  # the estimated waiting time for the next truck
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -116,7 +143,15 @@ class LoadSite:
         self.produced_tons = 0  # the produced tons of shovel
         self.service_count = 0  # the number of shovel-vehicle cycle
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
+        self.avg_queue_wait_time = 0  # the average waiting time for coming trucks in queue
         self.load_site_productivity = 0  # the productivity of load site
+        # service_time = min service time
+        self.last_service_time = 0  # 上一次服务Start时间
+        self.last_service_done_time = 0  # 上一次服务End时间
+
+    def update_service_time(self):
+        self.last_service_time = min([shovel.last_service_time for shovel in self.shovel_list])
+        self.last_service_done_time = min([shovel.last_service_done_time for shovel in self.shovel_list])
 
     def set_env(self, env:simpy.Environment):
         self.env = env

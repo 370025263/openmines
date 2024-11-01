@@ -18,8 +18,50 @@ class BaseDispatcher:
             return self._track_calls_and_time_wrapper(attr, name)
         return attr
 
+    def update_mine(self, mine: "Mine"):
+        # loadsite update
+        for load_site in mine.load_sites:
+            load_site.update_service_time()
+            load_site.parking_lot.update_queue_wait_status()
+        for dump_site in mine.dump_sites:
+            dump_site.update_service_time()
+            dump_site.parking_lot.update_queue_wait_status()
+        # road update
+        mine.update_road_status()
+
     def _track_calls_and_time_wrapper(self, method, method_type):
         def wrapper(*args, **kwargs):
+            # check input
+            # 处理self参数
+            if not args and not kwargs:
+                raise ValueError(f"{method_type} requires truck and mine arguments")
+
+            # 从位置参数或关键字参数中获取truck和mine
+            truck = None
+            mine = None
+
+            # 检查kwargs
+            if 'truck' in kwargs:
+                truck = kwargs['truck']
+            if 'mine' in kwargs:
+                mine = kwargs['mine']
+
+            # 如果没有在kwargs中找到，检查args
+            if len(args) >= 3:  # self + truck + mine
+                if truck is None:
+                    truck = args[1]
+                if mine is None:
+                    mine = args[2]
+
+            # 确保我们有所有需要的参数
+            if truck is None or mine is None:
+                raise ValueError(f"{method_type} requires both truck and mine arguments")
+
+            # update mine queue&wait info before the order starts
+            # 使用mine对象更新环境信息
+            self.update_mine(mine)
+
+            # 记录time,calls of dispatcher
             start_time = time.time()
             result = method(*args, **kwargs)
             elapsed_time = (time.time() - start_time) * 1000

@@ -119,12 +119,12 @@ class Mine:
             """
             2.监控道路的状态
             """
-            self.update_road_status(env, monitor=True)
+            self.update_road_status()
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
-    def update_road_status(self, env, monitor=False):
-        cur_time = env.now
+    def update_road_status(self):
+        cur_time = self.env.now
         # 获取mine的路网
         road = self.road
         charging_to_load_road = road.charging_to_load
@@ -161,7 +161,7 @@ class Mine:
                     road_status[(charging_site_name, load_site_name)]["repair_count"] += 1
             ## 统计道路上的truck
             for truck in self.trucks:
-                if not truck.current_location:
+                if not truck.current_location or not truck.target_location:
                     continue
                 if truck.current_location.name == charging_site_name and truck.target_location.name == load_site_name:
                     road_status[(charging_site_name, load_site_name)]["truck_count"] += 1

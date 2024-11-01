@@ -246,16 +246,22 @@ class Truck:
         load_time = (self.truck_capacity/shovel_tons) * shovel_cycle_time
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Start loading at shovel {shovel.name}, load time is {load_time}')
         self.status = "loading"
+        shovel.last_service_time = self.env.now  # 记录铲车上次服务时间, 用于计算等待时间
+        shovel.load_site.update_service_time()
         yield self.env.timeout(load_time)
         # 随机生成一个装载量 +-10%
         self.truck_load = self.truck_capacity*(1+np.random.uniform(-0.1, 0.1))
         shovel.produced_tons += self.truck_load
         shovel.service_count += 1
+        shovel.last_service_done_time = self.env.now  # 记录铲车上次服务完成时间
+        shovel.load_site.update_service_time()
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish loading at shovel {shovel.name}')
 
     def unload(self, dumper:Dumper):
         unload_time:float = dumper.dump_time
         self.status = "unloading"
+        dumper.last_service_time = self.env.now  # 记录卸载点上次服务时间, 用于计算等待时间
+        dumper.dump_site.update_service_time()
         yield self.env.timeout(unload_time)
         dumper.dumper_tons += self.truck_load
         self.total_load_count += self.truck_load
@@ -263,6 +269,8 @@ class Truck:
         self.truck_cycle_time = (self.env.now - self.last_breakdown_time) / self.service_count
         self.truck_load = 0
         dumper.service_count += 1
+        dumper.last_service_done_time = self.env.now  # 记录卸载点上次服务完成时间
+        dumper.dump_site.update_service_time()
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish unloading at dumper {dumper.name}, dumper tons is {dumper.dumper_tons}')
         # self.event_pool.add_event(Event(self.env.now, "unload", f'Truck:[{self.name}] Finish unloading at dumper {dumper.name}',
         #                           info={"name": self.name, "status": "unloading",
@@ -317,7 +325,7 @@ class Truck:
             dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
         self.first_order_time = self.env.now
         self.target_location = self.mine.load_sites[dest_load_index]
-        self.mine.update_road_status(self.env)  # manually update road status, since the monitor didn't start yet
+        self.mine.update_road_status()  # manually update road status, since the monitor didn't start yet
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
@@ -369,7 +377,7 @@ class Truck:
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
             self.status = "waiting for haul order"
-            self.mine.update_road_status(self.env)  # manually update road status, since the monitor may not distinguish the order at same integer time
+            self.mine.update_road_status()  # manually update road status, since the monitor may not distinguish the order at same integer time
             if is_rl_training:
                 # 等待RL agent给出决策;
                 dest_unload_index: int = yield self.env.process(self.wait_for_decision())
@@ -430,7 +438,7 @@ class Truck:
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
             self.target_location = dest_load_site
-            self.mine.update_road_status(self.env)  # manually update road status, since the monitor didn't start yet
+            self.mine.update_road_status()  # manually update road status, since the monitor didn't start yet
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
