@@ -364,9 +364,7 @@ class Mine:
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
         self.mine_logger.info("simulation started")
-        # log in the truck as process
-        for truck in self.trucks:
-            self.env.process(truck.run())
+
         # start some monitor process for summary
         for load_site in self.load_sites:
             # 对停车场队列的监控
@@ -397,6 +395,10 @@ class Mine:
                 self.env.process(dumper.monitor_status(env=self.env))
         # 对矿山整体监控
         self.env.process(self.monitor_status(env=self.env))
+
+        # log in the truck as process
+        for truck in self.trucks:
+            self.env.process(truck.run())
 
         self.env.run(until=total_time)
         self.mine_logger.info("simulation finished")

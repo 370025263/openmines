@@ -147,6 +147,9 @@ def run_simulation(config_file=None):
             'summary': ticks['summary']
         }
     # 绘制图表
+    if not states_dict:
+        print("No data to plot")
+        return
     charter.draw(states_dict)
     charter.save()
 

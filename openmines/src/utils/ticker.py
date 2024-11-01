@@ -360,7 +360,7 @@ class TickGenerator:
         for i in range(unique_loading_time.shape[0]):
             for j in range(unique_loading_time.shape[1]):
                 upside_down_sum += shovel_type_count[f'{i}_{unique_loading_time[i,j]}']*(lcm_load_time[i]/unique_loading_time[i,j])
-        match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg)
+        match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg) if truck_cycle_time_avg else 0
         print(f'MatchingFactor: {match_factor}')
         total_wait_time = sum([truck.get_wait_time() for truck in self.mine.trucks])
         print(f'TotalWaitTime: {total_wait_time}')
@@ -389,6 +389,7 @@ class TickGenerator:
             try:
                 json.dump(self.ticks,f)
                 print("file_name:{} write success".format(file_name))
+                print(f"Path: {file_path}")
             except Exception as e:
                 print(e)
                 print("file_name:{} write failed".format(file_name))

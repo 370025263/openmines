@@ -484,7 +484,7 @@ class Truck:
 
         wait_shovel_event_time = sum([event.time_stamp for event in wait_shovel_events])
         end_wait_shovel_event_time = sum([event.time_stamp for event in end_wait_shovel_events])
-        wait_time = (end_wait_shovel_event_time - wait_shovel_event_time) / wait_shovel_event_count
+        wait_time = (end_wait_shovel_event_time - wait_shovel_event_time) / wait_shovel_event_count if wait_shovel_event_count else 0
         if wait_time == float('inf'):
             wait_time = 0
         return wait_time

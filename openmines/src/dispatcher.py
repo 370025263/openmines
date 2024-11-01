@@ -47,11 +47,11 @@ class BaseDispatcher:
                 mine = kwargs['mine']
 
             # 如果没有在kwargs中找到，检查args
-            if len(args) >= 3:  # self + truck + mine
+            if len(args) >= 2:  # self + truck + mine
                 if truck is None:
-                    truck = args[1]
+                    truck = args[0]
                 if mine is None:
-                    mine = args[2]
+                    mine = args[1]
 
             # 确保我们有所有需要的参数
             if truck is None or mine is None:
