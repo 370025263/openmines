@@ -25,5 +25,5 @@ setup(
             'openmines=openmines.src.cli.run:main',
         ],
     },
-    install_requires=required + ['gymnasium'],
+    install_requires=required + ['gymnasium==0.28.1'],
 )
