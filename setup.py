@@ -9,12 +9,15 @@ with open('openmines/requirements.txt') as f:
 setup(
     name='openmines',
     version=openmines.__version__,
-    author='stone91',  # 添加作者
-    description='Mining Fleet Dispatch Algorithm Framework',  # 添加描述（英文）
-    license='MIT',  # 添加许可证
-    packages=find_packages(),
+    author='stone91',
+    description='Mining Fleet Dispatch Algorithm Framework',
+    license='MIT',
+    packages=find_packages() + [
+        'openmines.src.utils.gym.openmines_gym',
+        'openmines.src.utils.gym.openmines_gym.envs',
+        'openmines.src.utils.gym.openmines_gym.wrappers'
+    ],
     package_data={
-        # 确保你的包名正确
         'openmines': ['./src/utils/visualization/materials/*'],
     },
     entry_points={
@@ -22,6 +25,5 @@ setup(
             'openmines=openmines.src.cli.run:main',
         ],
     },
-    install_requires=required,  # 使用requirements.txt中的依赖
-    # 可以在此添加更多元数据，如作者邮箱、项目网址等
+    install_requires=required + ['gymnasium'],
 )
