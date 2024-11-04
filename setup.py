@@ -24,6 +24,9 @@ setup(
         'console_scripts': [
             'openmines=openmines.src.cli.run:main',
         ],
+        'gymnasium.envs': [
+            'mine=openmines_gym:register_envs',
+        ],
     },
     install_requires=required + ['gymnasium==0.28.1'],
 )

@@ -38,7 +38,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "Mine-v0"
+    env_id: str = "mine/Mine-v0"
     """the id of the environment"""
     mine_config: str = "../../src/conf/north_pit_mine.json"
     """the config file of the mine environment"""
