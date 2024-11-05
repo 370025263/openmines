@@ -42,11 +42,11 @@ class Args:
     """the id of the environment"""
     mine_config: str = "../../src/conf/north_pit_mine.json"
     """the config file of the mine environment"""
-    total_timesteps: int = 50000000
+    total_timesteps: int = 5000000
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 5  # 4
+    num_envs: int = 200  # 4
     """the number of parallel game environments"""
     num_steps: int = 700  # 128
     """the number of steps to run in each environment per policy rollout"""
@@ -113,7 +113,7 @@ class Agent(nn.Module):
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
         # 获取观察空间的维度
-        self.obs_shape = 26#212 #@self._get_obs_shape(212)
+        self.obs_shape = 26  #212 #@self._get_obs_shape(212)
 
         # 共享特征提取层
         self.shared_net = nn.Sequential(
@@ -140,7 +140,7 @@ class Agent(nn.Module):
     def get_value(self, x):
         return self.critic(x)
 
-    def get_action_and_value(self, x, action=None):
+    def get_action_and_value(self, x, action=None, sug_action=None):
         features = self.shared_net(x)
         batch_size = x.shape[0]
         event_types = torch.argmax(x[:, :3], dim=1)
@@ -151,10 +151,13 @@ class Agent(nn.Module):
             event_type = str(event_types[i].item())
             head_output = self.actor_heads[event_type](features[i:i + 1])
             logits[i] = head_output
+
         probs = Categorical(logits=logits)
+
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x)
+        return action, probs.log_prob(action), probs.entropy(), self.critic(x), probs.log_prob(
+            sug_action) if sug_action is not None else None
 
 
 if __name__ == "__main__":
@@ -203,6 +206,7 @@ if __name__ == "__main__":
     obs_shape = agent.obs_shape
     obs = torch.zeros((args.num_steps, args.num_envs, obs_shape)).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
+    sug_actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
     logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
     rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
@@ -211,7 +215,7 @@ if __name__ == "__main__":
     # TRY NOT TO MODIFY: start the game
     global_step = 0
     start_time = time.time()
-    next_obs, _ = envs.reset(seed=args.seed)
+    next_obs, infos = envs.reset(seed=args.seed)
     #next_obs = torch.Tensor(next_obs).to(device)
     next_obs = torch.FloatTensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
@@ -228,18 +232,25 @@ if __name__ == "__main__":
             obs[step] = next_obs
             dones[step] = next_done
 
+
             # ALGO LOGIC: action logic
             with torch.no_grad():
-                action, logprob, _, value = agent.get_action_and_value(next_obs)
+                current_sug_action = torch.tensor(infos.get("sug_action", [-1] * args.num_envs)).to(device)
+                action, logprob, _, value, _ = agent.get_action_and_value(next_obs, sug_action=current_sug_action)
                 values[step] = value.flatten()
             actions[step] = action
             logprobs[step] = logprob
+            # print('current_sug_action:', current_sug_action, current_sug_action.shape, sug_actions[step].shape)
+            sug_actions[step] = current_sug_action
 
             # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
             next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
+
+            # CUSTOM LOGIC: sug_action as label to create a loss
+            #sug_actions = torch.tensor(infos["sug_action"]).to(device)
 
             if infos.keys() and "final_info" in infos:
                 pass
@@ -256,7 +267,7 @@ if __name__ == "__main__":
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}",
                               f"episodic_length={info['episode']['l']}, produce_tons={avg_tons}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
+                        writer.add_scalar("charts/episodic_letstrap value if not donength", info["episode"]["l"], global_step)
                         writer.add_scalar("charts/produce_tons", avg_tons, global_step)
 
         # bootstrap value if not done
@@ -279,6 +290,7 @@ if __name__ == "__main__":
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
+        b_sug_actions = sug_actions.reshape((-1,) + envs.single_action_space.shape) # 在优化阶段添加指导损失
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -292,7 +304,7 @@ if __name__ == "__main__":
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue, sug_logprob = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds],b_sug_actions.long()[mb_inds])
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
@@ -327,7 +339,13 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef
+                # Sug-action loss: KL divergence between sug_action and action
+                # 添加指导损失
+                guide_coef = 0.1  # 指导损失的权重系数
+                valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()  # 处理无效的建议动作
+                guide_loss = -(sug_logprob * valid_sug_mask).mean()
+
+                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef + guide_coef * guide_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -350,6 +368,7 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
+        writer.add_scalar("losses/guide_loss", guide_loss.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
