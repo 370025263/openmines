@@ -38,7 +38,7 @@ class Args:
     """whether to capture videos of the agent performances (check out `videos` folder)"""
 
     # Algorithm specific arguments
-    env_id: str = "mine/Mine-v0"
+    env_id: str = "mine/Mine-v1"   # mine/Mine-v0(multiprocessing, SyncVectorEnv) mine/Mine-v1(threading, AsyncVectorEnv)
     """the id of the environment"""
     mine_config: str = "../../src/conf/north_pit_mine.json"
     """the config file of the mine environment"""
@@ -46,7 +46,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 6  # 4
+    num_envs: int = 5  # 4
     """the number of parallel game environments"""
     num_steps: int = 700  # 128
     """the number of steps to run in each environment per policy rollout"""
@@ -108,8 +108,8 @@ class Agent(nn.Module):
         super().__init__()
         super().__init__()
         # 提取环境信息
-        self.load_sites_num = envs.envs[0].config['load_sites'].__len__()
-        self.dump_sites_num = envs.envs[0].config['dump_sites'].__len__()
+        self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__()
+        self.dump_sites_num = envs.env_fns[0]().config['dump_sites'].__len__()
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
         # 获取观察空间的维度
@@ -190,7 +190,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
     # env setup
-    envs = gym.vector.SyncVectorEnv(
+    envs = gym.vector.AsyncVectorEnv(
         [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
     )
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"

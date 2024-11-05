@@ -7,6 +7,7 @@ import multiprocessing
 from multiprocessing import Queue
 import logging
 import pathlib
+import threading
 from typing import Optional, Dict, Any
 
 from openmines.src.utils.rl_env import prepare_env
@@ -254,14 +255,137 @@ class GymMineEnv(gym.Env):
         pass
 
 
+
+
+class ThreadMineEnv(gym.Env):
+    """将矿山环境包装为标准的gym环境(线程版本)"""
+    metadata = {"render_modes": None, "render_fps": None}
+
+    def __init__(self, config_file, seed=42, log=False, ticks=False):
+        super().__init__()
+
+        # 加载配置
+        self.config_file = config_file
+        with open(config_file, 'r') as f:
+            self.config = json.load(f)
+
+        self.load_site_n = len(self.config['load_sites'])
+        self.dump_site_n = len(self.config['dump_sites'])
+
+        self.log = log
+        self.ticks = ticks
+        self.seed_value = seed
+
+        # 定义动作空间和观察空间
+        max_choices = max(
+            self.config.get('load_sites', []).__len__(),  # 最大装载点数量
+            self.config.get('dump_sites', []).__len__()  # 最大卸载点数量
+        )
+        self.action_space = spaces.Discrete(max_choices)
+
+        # 观察空间：26维状态空间
+        self.observation_space = spaces.Box(
+            low=0,
+            high=np.inf,
+            shape=(26,),
+            dtype=np.float32
+        )
+
+        # 初始化通信队列和线程
+        self.obs_queue = None
+        self.act_queue = None
+        self.thread = None
+        self.is_running = False
+
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[Any, dict[str, Any]]:
+        """重置环境到初始状态"""
+        # 设置随机种子
+        super().reset(seed=seed if seed is not None else self.seed_value)
+
+        # 如果存在旧线程，停止它
+        if self.thread and self.is_running:
+            self.is_running = False
+            self.thread.join()
+
+        # 创建新的通信队列
+        self.obs_queue = Queue()
+        self.act_queue = Queue()
+        self.is_running = True
+
+        # 启动新的环境线程
+        self.thread = threading.Thread(
+            target=prepare_env,
+            args=(self.obs_queue, self.act_queue, self.config,
+                  self.config['sim_time'], self.log, self.ticks, self.seed_value)
+        )
+        self.thread.daemon = True  # 设置为守护线程
+        self.thread.start()
+
+        # 获取初始观察
+        out = self.obs_queue.get()
+        observation = out["ob"]
+        info = out["info"]
+
+        # 预处理观察
+        processed_obs = preprocess_observation(observation)
+        return processed_obs, info
+
+    def step(self, action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
+        """执行一个动作并返回结果"""
+        # 发送动作到环境线程
+        self.act_queue.put(action)
+
+        # 接收结果
+        out = self.obs_queue.get()
+        observation = out["ob"]
+        reward = out["reward"]
+        terminated = out["done"]
+        truncated = out["truncated"]
+        info = out["info"]
+
+        # 预处理观察
+        processed_obs = preprocess_observation(observation)
+
+        return processed_obs, reward, terminated, truncated, info
+
+    def close(self):
+        """清理资源"""
+        if self.thread and self.is_running:
+            self.is_running = False
+            self.thread.join(timeout=1.0)  # 等待线程结束，最多等待1秒
+        super().close()
+
+    def render(self):
+        """实现渲染方法"""
+        # 当前环境不支持渲染
+        pass
+
+
 # 使用示例
 if __name__ == "__main__":
+    """
+    THREAD MINE"""
+    # 创建环境
+    env = ThreadMineEnv("../../../../conf/north_pit_mine.json", log=False, ticks=False)
+    # 添加episode统计包装器
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    # 测试环境
+    observation, info = env.reset(seed=42)
+    for i in range(2000):
+        action = env.action_space.sample()  # 随机动作
+        print(f"A_{i} Action: {action}")
+        observation, reward, terminated, truncated, info = env.step(action)
+        print(f"Step: {i}, Reward: {reward}, Info: {info} terminated: {terminated}, truncated: {truncated}")
+        if terminated or truncated:
+            observation, info = env.reset()
+            break
+    env.close()
+
+    """Multiprocessing Mine"""
     # 创建环境
     env = GymMineEnv("../../../../conf/north_pit_mine.json", log=False, ticks=False)
-
     # 添加一些常用的包装器
     env = gym.wrappers.RecordEpisodeStatistics(env)  # 记录episode统计
-
     # 使用环境
     observation, info = env.reset(seed=42)
     for i in range(2000):
