@@ -1,5 +1,7 @@
 import json
 import os
+
+import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
 from pathlib import Path
@@ -87,9 +89,81 @@ class Charter:
         plt.tight_layout()
         self.fig_tab = fig_tab
 
+        # Plot the histogram
+        load_site_names = [state for state in states_dict.values()][0]['summary']["load_sites_name"]
+        dump_site_names = [state for state in states_dict.values()][0]['summary']["dump_sites_name"]
+
+        dispatcher_name_list = list(states_dict.keys())
+        init_orders_list = [states['summary']['init_orders'] for states in states_dict.values()]
+        haul_orders_list = [states['summary']['haul_orders'] for states in states_dict.values()]
+        back_orders_list = [states['summary']['back_orders'] for states in states_dict.values()]
+        self.init_orders_fig = self.plot_histogram(init_orders_list, prefix_list=dispatcher_name_list, entre_names=load_site_names, title="LoadSite Orders")
+        self.haul_orders_fig = self.plot_histogram(haul_orders_list, prefix_list=dispatcher_name_list, entre_names=dump_site_names, title="DumpSite Orders")
+        self.back_orders_fig = self.plot_histogram(back_orders_list, prefix_list=dispatcher_name_list, entre_names=dump_site_names, title="BackSite Orders")
+
+    @staticmethod
+    def plot_histogram(data_list, prefix_list, entre_names=None, title="Histogram of SiteOrder", show=False):
+        # 统计每个数字出现的次数
+        count_dicts = []
+        for data in data_list:
+            count_dict = {}
+            for num in data:
+                if num in count_dict:
+                    count_dict[num] += 1
+                else:
+                    count_dict[num] = 1
+            count_dicts.append(count_dict)
+
+        # 获取所有唯一的数字
+        unique_numbers = sorted(set().union(*[d.keys() for d in count_dicts]))
+
+        # 动态设置柱状图的宽度和位置
+        num_groups = len(prefix_list)  # 数据列表的数量
+        bar_width = 0.8 / num_groups  # 动态计算每个柱子的宽度
+        index = np.arange(len(entre_names))  # x轴位置
+
+        # 绘制柱状图
+        fig = plt.figure(figsize=(10, 6))
+        for i, (count_dict, prefix) in enumerate(zip(count_dicts, prefix_list)):
+            counts = [count_dict.get(num, 0) for num in unique_numbers]
+            plt.bar(index + i * bar_width, counts, bar_width, label=prefix, color=plt.cm.viridis(i / num_groups),
+                    edgecolor='black', linewidth=0.7)
+
+        # 设置x轴标签
+        plt.xlabel('Sites', fontsize=12, fontweight='bold')
+        plt.ylabel('Count', fontsize=12, fontweight='bold')
+        plt.title(title, fontsize=14, fontweight='bold')
+
+        if entre_names is None: entre_names = [f'Site {num}' for num in unique_numbers]
+        # 设置刻度位置和标签
+        tick_positions = index + (num_groups - 1) * bar_width / 2
+        plt.xticks(tick_positions, entre_names, rotation=45, fontsize=10)
+        plt.yticks(fontsize=10)
+
+        # 添加网格线
+        plt.grid(axis='y', linestyle='--', alpha=0.7)
+
+        # 设置图例
+        plt.legend(frameon=False, fontsize=10, bbox_to_anchor=(1.05, 1), loc='upper left')
+
+        # 去除顶部和右侧边框
+        plt.gca().spines['top'].set_visible(False)
+        plt.gca().spines['right'].set_visible(False)
+
+        # 显示图形
+        plt.tight_layout()
+        if show:
+            plt.show()
+        return fig
+
     def save(self):
         # 保存图像
         if self.fig_img is None or self.fig_tab is None:
             raise Exception("You must draw the chart first!")
         self.fig_img.savefig(self.img_path, dpi=300, format='tiff')
         self.fig_tab.savefig(self.tab_path, dpi=300, format='tiff')
+        self.init_orders_fig.savefig(self.result_path / "init_orders.png", dpi=300, format='png')
+        self.haul_orders_fig.savefig(self.result_path / "haul_orders.png", dpi=300, format='png')
+        self.back_orders_fig.savefig(self.result_path / "back_orders.png", dpi=300, format='png')
+
+

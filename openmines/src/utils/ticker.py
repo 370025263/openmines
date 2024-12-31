@@ -375,7 +375,13 @@ class TickGenerator:
             "TotalWaitTime":total_wait_time,
             "avg_time_per_order":avg_time_per_order,
             "total_order_count":total_order_count,
-            "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count']
+            "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count'],
+            "init_orders":self.mine.dispatcher.init_orders,
+            "haul_orders":self.mine.dispatcher.haul_orders,
+            "back_orders":self.mine.dispatcher.back_orders,
+            # meta
+            "load_sites_name":[load_site.name for load_site in self.mine.load_sites],
+            "dump_sites_name":[dump_site.name for dump_site in self.mine.dump_sites],
         }
 
     def write_to_file(self, file_name):

@@ -3,6 +3,9 @@ import time
 
 class BaseDispatcher:
     def __init__(self):
+        self.init_orders = []
+        self.haul_orders = []
+        self.back_orders = []
         self.init_order_count = 0
         self.haul_order_count = 0
         self.back_order_count = 0
@@ -59,7 +62,7 @@ class BaseDispatcher:
 
             # update mine queue&wait info before the order starts
             # 使用mine对象更新环境信息
-            self.update_mine(mine)
+            #self.update_mine(mine)
 
             # 记录time,calls of dispatcher
             start_time = time.time()
@@ -69,12 +72,15 @@ class BaseDispatcher:
             if method_type == "give_init_order":
                 self.init_order_count += 1
                 self.init_order_time += elapsed_time
+                self.init_orders.append(result)
             elif method_type == "give_haul_order":
                 self.haul_order_count += 1
                 self.haul_order_time += elapsed_time
+                self.haul_orders.append(result)
             elif method_type == "give_back_order":
                 self.back_order_count += 1
                 self.back_order_time += elapsed_time
+                self.back_orders.append(result)
 
             self.total_order_count = self.init_order_count + self.haul_order_count + self.back_order_count
             self.total_order_time = self.init_order_time + self.haul_order_time + self.back_order_time
@@ -123,3 +129,6 @@ if __name__ == "__main__":
     print("Haul Order Time:", dispatcher.haul_order_time)
     print("Back Order Time:", dispatcher.back_order_time)
     print("Total Order Time:", dispatcher.total_order_time)
+    print("Init Orders:", dispatcher.init_orders)
+    print("Haul Orders:", dispatcher.haul_orders)
+    print("Back Orders:", dispatcher.back_orders)
