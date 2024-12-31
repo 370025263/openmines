@@ -13,7 +13,7 @@ class LLMDispatcher(BaseDispatcher):
     def __init__(self):
         super().__init__()
         self.name = "LLMDispatcher"
-        self.OPENAI = OPENAI(model_name="gpt-3.5-turbo-0613")
+        self.OPENAI = OPENAI(model_name="deepseek-chat")
         self.order_index = 0
         self.init_order_index = 0
         self.common_order_index = 0
@@ -100,6 +100,7 @@ class LLMDispatcher(BaseDispatcher):
                 json_str = response[start:end]
                 data = json.loads(json_str)
                 loadsite_index = data["loadingsite_index"]
+                assert loadsite_index < len(mine.load_sites), f"loadsite_index {loadsite_index} is out of range"
                 break
             except Exception as e:
                 print(e)
@@ -205,6 +206,7 @@ class LLMDispatcher(BaseDispatcher):
                 json_str = response[start:end]
                 data = json.loads(json_str)
                 dumpsite_index = data["dumpsite_index"]
+                assert dumpsite_index < len(avaliable_dumpsites), f"dumpsite_index {dumpsite_index} is out of range"
                 break
             except Exception as e:
                 print(e)
@@ -313,6 +315,7 @@ class LLMDispatcher(BaseDispatcher):
                 json_str = response[start:end]
                 data = json.loads(json_str)
                 loadsite_index = data["loadsite_index"]
+                assert loadsite_index < len(avaliable_loadsites), f"loadsite_index {loadsite_index} is out of range"
                 break
             except Exception as e:
                 print(e)
@@ -337,7 +340,7 @@ class LLMDispatcher(BaseDispatcher):
 
 
 class OPENAI:
-    def __init__(self, model_name="gpt-3.5-turbo"):
+    def __init__(self, model_name="deepseek-chat"):
         self.api_key = "YOUR API KEY"  # token
         self.api_base = "OPENAI BASE HERE"  # you can choose custom api base, like:"https://api.qaqgpt.com/v1"
         self.model_name = model_name
