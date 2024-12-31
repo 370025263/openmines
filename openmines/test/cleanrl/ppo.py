@@ -3,6 +3,7 @@ import os
 import random
 import time
 from dataclasses import dataclass
+from typing import Optional, Dict
 
 import gymnasium as gym
 import numpy as np
@@ -46,7 +47,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 200  # 4
+    num_envs: int = 2  # 4
     """the number of parallel game environments"""
     num_steps: int = 700  # 128
     """the number of steps to run in each environment per policy rollout"""
@@ -74,6 +75,22 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+    # 添加检查点相关参数
+    checkpoint_dir: str = "checkpoints"
+    """检查点保存目录"""
+    save_interval: int = 100
+    """每N个iteration保存一次模型"""
+    keep_checkpoint_max: int = 5
+    """保留最近的N个检查点"""
+    checkpoint_path: Optional[str] = None
+    """加载特定检查点的路径"""
+    save_best_only: bool = False
+    """是否只保存最佳模型"""
+    # 添加指导损失相关参数
+    guide_initial_value: float = 0.1
+    guide_final_value: float = 0.0
+    guide_start_decay_step: int = 3_000_000
+    guide_decay_steps: int = 500_000
 
     # to be filled in runtime
     batch_size: int = 0
@@ -82,7 +99,6 @@ class Args:
     """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
-
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
@@ -159,6 +175,145 @@ class Agent(nn.Module):
         return action, probs.log_prob(action), probs.entropy(), self.critic(x), probs.log_prob(
             sug_action) if sug_action is not None else None
 
+    @property
+    def device(self):
+        """获取模型所在设备"""
+        return next(self.parameters()).device
+
+    def save(self, path):
+        """保存模型"""
+        torch.save(self.state_dict(), path)
+
+    def load(self, path):
+        """加载模型"""
+        self.load_state_dict(torch.load(path, map_location=self.device))
+
+
+# 首先添加衰减器类
+class GuidanceDecay:
+    """指导系数衰减器
+        coef
+    0.1 |XXXXXX
+        |      X
+        |       X
+        |        X
+        |         X
+    0.0 |          XXXX
+        +---------------
+        0    3M   4M  steps
+    """
+
+    def __init__(self,
+                 initial_value: float = 0.1,
+                 final_value: float = 0.0,
+                 start_decay_step: int = 3_000_000,
+                 decay_steps: int = 500_000):
+        self.initial_value = initial_value
+        self.final_value = final_value
+        self.start_decay_step = start_decay_step
+        self.decay_steps = decay_steps
+
+    def get_value(self, global_step: int) -> float:
+        """获取当前步骤的指导系数"""
+        if global_step < self.start_decay_step:
+            return self.initial_value
+
+        # 如果超过衰减结束步数，返回最终值
+        if global_step >= self.start_decay_step + self.decay_steps:
+            return self.final_value
+
+        # 线性衰减
+        decay_progress = (global_step - self.start_decay_step) / self.decay_steps
+        return self.initial_value + (self.final_value - self.initial_value) * decay_progress
+
+
+class CheckpointManager:
+    """检查点管理器"""
+
+    def __init__(self, args: Args, exp_name: str):
+        self.args = args
+        self.exp_name = exp_name
+        self.checkpoint_dir = os.path.join(args.checkpoint_dir, exp_name)
+        self.best_reward = float('-inf')
+        os.makedirs(self.checkpoint_dir, exist_ok=True)
+
+    def save_checkpoint(self,
+                        agent: nn.Module,
+                        optimizer: optim.Optimizer,
+                        iteration: int,
+                        reward: float,
+                        is_best: bool = False,
+                        additional_info: Dict = None) -> str:
+        """保存检查点"""
+        checkpoint = {
+            'iteration': iteration,
+            'model_state_dict': agent.state_dict(),
+            'optimizer_state_dict': optimizer.state_dict(),
+            'reward': reward,
+            'args': self.args,
+            'info': additional_info or {}
+        }
+
+        # 保存当前检查点
+        if not self.args.save_best_only:
+            checkpoint_path = os.path.join(
+                self.checkpoint_dir,
+                f'checkpoint_{iteration:07d}.pt'
+            )
+            torch.save(checkpoint, checkpoint_path)
+
+        # 保存最佳模型
+        if is_best:
+            best_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
+            torch.save(checkpoint, best_path)
+            print(f"New best model saved with reward: {reward:.2f}")
+
+        # 清理旧检查点
+        self._cleanup_old_checkpoints()
+
+        return checkpoint_path
+
+    def load_checkpoint(self,
+                        agent: nn.Module,
+                        optimizer: Optional[optim.Optimizer] = None,
+                        path: Optional[str] = None) -> tuple:
+        """加载检查点"""
+        if path is None:
+            # 尝试加载最新的检查点
+            checkpoints = self._get_checkpoints()
+            if not checkpoints:
+                return 0, float('-inf')
+            path = checkpoints[-1]
+
+        try:
+            print(f"Loading checkpoint from {path}")
+            checkpoint = torch.load(path, map_location=agent.device)
+            agent.load_state_dict(checkpoint['model_state_dict'])
+            if optimizer is not None:
+                optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+            return checkpoint['iteration'], checkpoint['reward']
+        except Exception as e:
+            print(f"Error loading checkpoint: {e}")
+            return 0, float('-inf')
+
+    def _cleanup_old_checkpoints(self):
+        """清理旧的检查点，只保留最近的N个"""
+        if self.args.save_best_only:
+            return
+
+        checkpoints = self._get_checkpoints()
+        if len(checkpoints) > self.args.keep_checkpoint_max:
+            for checkpoint in checkpoints[:-self.args.keep_checkpoint_max]:
+                os.remove(checkpoint)
+
+    def _get_checkpoints(self):
+        """获取所有检查点，按迭代次数排序"""
+        checkpoints = [
+            f for f in os.listdir(self.checkpoint_dir)
+            if f.startswith('checkpoint_') and f.endswith('.pt')
+        ]
+        checkpoints = [os.path.join(self.checkpoint_dir, f) for f in checkpoints]
+        return sorted(checkpoints)
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -201,6 +356,24 @@ if __name__ == "__main__":
     agent = Agent(envs).to(device)
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
+    # 创建检查点管理器
+    checkpoint_manager = CheckpointManager(args, run_name)
+
+    # 创建指导系数衰减器(DIRECT POLICY GUIDANCE)
+    guide_decay = GuidanceDecay(
+        initial_value=args.guide_initial_value,
+        final_value=args.guide_final_value,
+        start_decay_step=args.guide_start_decay_step,
+        decay_steps=args.guide_decay_steps
+    )
+
+    # 加载检查点(如果指定)
+    start_iteration = 0
+    if args.checkpoint_path:
+        start_iteration, best_reward = checkpoint_manager.load_checkpoint(
+            agent, optimizer, args.checkpoint_path
+        )
+
     # ALGO Logic: Storage setup
     # 使用预处理后的观察空间维度
     obs_shape = agent.obs_shape
@@ -226,6 +399,25 @@ if __name__ == "__main__":
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+        # 保存检查点
+        if iteration % args.save_interval == 0:
+            is_best = False
+            current_reward = info["episode"]["r"] if "episode" in info else 0
+            if current_reward > best_reward:
+                best_reward = current_reward
+                is_best = True
+
+            checkpoint_manager.save_checkpoint(
+                agent,
+                optimizer,
+                iteration,
+                current_reward,
+                is_best,
+                additional_info={
+                    'global_step': global_step,
+                    'time_elapsed': time.time() - start_time
+                }
+            )
 
         for step in range(0, args.num_steps):
             global_step += args.num_envs
@@ -341,7 +533,7 @@ if __name__ == "__main__":
                 entropy_loss = entropy.mean()
                 # Sug-action loss: KL divergence between sug_action and action
                 # 添加指导损失
-                guide_coef = 0.1  # 指导损失的权重系数
+                guide_coef = guide_decay.get_value(global_step)  # 指导损失的权重系数
                 valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()  # 处理无效的建议动作
                 guide_loss = -(sug_logprob * valid_sug_mask).mean()
 
@@ -371,6 +563,15 @@ if __name__ == "__main__":
         writer.add_scalar("losses/guide_loss", guide_loss.item(), global_step)
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+
+    # 保存最终模型
+    checkpoint_manager.save_checkpoint(
+        agent,
+        optimizer,
+        args.num_iterations,
+        best_reward,
+        additional_info={'final': True}
+    )
 
     envs.close()
     writer.close()
