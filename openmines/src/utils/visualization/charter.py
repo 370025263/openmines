@@ -117,10 +117,18 @@ class Charter:
         # 获取所有唯一的数字
         unique_numbers = sorted(set().union(*[d.keys() for d in count_dicts]))
 
+        if entre_names is not None:
+            # 确保 entre_names 和 unique_numbers 一致
+            if len(entre_names) != len(unique_numbers):
+                raise ValueError("entre_names 和 unique_numbers 的长度不一致")
+            tick_labels = entre_names
+        else:
+            tick_labels = [f'Site {num}' for num in unique_numbers]
+
         # 动态设置柱状图的宽度和位置
         num_groups = len(prefix_list)  # 数据列表的数量
         bar_width = 0.8 / num_groups  # 动态计算每个柱子的宽度
-        index = np.arange(len(entre_names))  # x轴位置
+        index = np.arange(len(unique_numbers))  # x轴位置基于 unique_numbers
 
         # 绘制柱状图
         fig = plt.figure(figsize=(10, 6))
@@ -134,10 +142,9 @@ class Charter:
         plt.ylabel('Count', fontsize=12, fontweight='bold')
         plt.title(title, fontsize=14, fontweight='bold')
 
-        if entre_names is None: entre_names = [f'Site {num}' for num in unique_numbers]
         # 设置刻度位置和标签
         tick_positions = index + (num_groups - 1) * bar_width / 2
-        plt.xticks(tick_positions, entre_names, rotation=45, fontsize=10)
+        plt.xticks(tick_positions, tick_labels, rotation=45, fontsize=10)
         plt.yticks(fontsize=10)
 
         # 添加网格线
