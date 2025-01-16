@@ -115,6 +115,8 @@ class Shovel:
         self.last_service_time = 0  # the last service time of shovel, the moment that the shovel start loading a truck
         self.last_service_done_time = 0  # the last service done time of shovel, the moment that the shovel finish loading a truck
         self.est_waiting_time = 0  # the estimated waiting time for the next truck
+        # shovel breakdown
+        self.last_breakdown_time = 0  # 上一次故障时间
 
     def set_env(self, env:simpy.Environment):
         self.env = env

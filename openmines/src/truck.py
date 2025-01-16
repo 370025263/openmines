@@ -374,6 +374,30 @@ class Truck:
                 last_load_event = self.event_pool.get_last_event(type="get shovel", strict=True)
                 last_load_event.info["end_time"] = self.env.now
                 last_load_event.info["load_duration"] = self.env.now - last_load_event.info["start_time"]
+                # **铲车维护逻辑**
+                # 维护事件的发生由指数分布采样(lambda=1/480)
+                # 发生后维护时间由正态分布采样u=45, sig=5
+                time_to_next_maintenance = np.random.exponential(scale=480)  # 平均480分钟
+                if self.env.now >= shovel.last_breakdown_time + time_to_next_maintenance:
+                    # 触发维护
+                    maintenance_duration = max(np.random.normal(45, 5), 0)  # 确保为正值
+                    # 记录维护开始事件
+                    self.event_pool.add_event(Event(self.env.now, "Shovel Maintenance Start",
+                                                    f'Shovel {load_site.get_available_shovel().name} under maintenance for {maintenance_duration:.2f} minutes',
+                                                    info={"shovel": load_site.get_available_shovel().name, "status": "maintenance",
+                                                          "start_time": self.env.now, "end_time": self.env.now + maintenance_duration}))
+                    self.logger.info(f'Time:<{self.env.now}> Shovel {load_site.get_available_shovel().name} under maintenance for {maintenance_duration:.2f} minutes')
+                    # 执行维护（保持持有资源）
+                    yield self.env.timeout(maintenance_duration)
+                    # 记录维护完成事件
+                    self.event_pool.add_event(Event(self.env.now, "Shovel Maintenance Complete",
+                                                    f'Shovel {load_site.get_available_shovel().name} maintenance completed',
+                                                    info={"shovel": load_site.get_available_shovel().name, "status": "available",
+                                                          "end_time": self.env.now}))
+                    self.logger.info(f'Time:<{self.env.now}> Shovel {load_site.get_available_shovel().name} maintenance completed')
+                    # 更新最后一次维护时间
+                    shovel.last_breakdown_time = self.env.now
+                # **铲车维护逻辑结束**
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
             self.status = "waiting for haul order"
