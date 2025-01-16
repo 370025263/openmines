@@ -117,10 +117,8 @@ class Charter:
         # 获取所有唯一的数字
         unique_numbers = sorted(set().union(*[d.keys() for d in count_dicts]))
 
-        if entre_names is not None:
-            # 确保 entre_names 和 unique_numbers 一致
-            if len(entre_names) != len(unique_numbers):
-                raise ValueError("entre_names 和 unique_numbers 的长度不一致")
+        # Conditionally set tick labels
+        if entre_names is not None and len(entre_names) == len(unique_numbers):
             tick_labels = entre_names
         else:
             tick_labels = [f'Site {num}' for num in unique_numbers]
@@ -128,6 +126,8 @@ class Charter:
         # 动态设置柱状图的宽度和位置
         num_groups = len(prefix_list)  # 数据列表的数量
         bar_width = 0.8 / num_groups  # 动态计算每个柱子的宽度
+        max_bar_width = 0.4  # 设置最大柱宽
+        bar_width = min(bar_width, max_bar_width)  # 保证柱子的最大宽度不会超过max_bar_width
         index = np.arange(len(unique_numbers))  # x轴位置基于 unique_numbers
 
         # 绘制柱状图
