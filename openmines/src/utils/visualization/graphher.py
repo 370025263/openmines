@@ -39,6 +39,7 @@ class VisualGrapher:
         self.img_truck_initing = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_initing.png'))
         self.img_dump = mpimg.imread(os.path.join(script_directory, 'materials', 'dump.png'))
         self.img_repair = mpimg.imread(os.path.join(script_directory, 'materials', 'repair.png'))
+        self.img_unrepairable = mpimg.imread(os.path.join(script_directory, 'materials', 'unrepairable.png'))
 
     def update_progress(self, pbar):
         pbar.update()
@@ -134,6 +135,12 @@ class VisualGrapher:
                 img_truck = self.img_truck_hauling
             else:
                 img_truck = self.img_truck_initing
+            if truck_data['state'] == self.REPAIRING:
+                repair_position = (truck_data['position'][0] + 0.02, truck_data['position'][1] + 0.01)
+                self.place_image(repair_position, self.img_repair, zoom=TRUCK_SCALE * 0.6)
+            if truck_data['state'] == self.UNREPAIRABLE:
+                unrepairable_position = (truck_data['position'][0] + 0.02, truck_data['position'][1] + 0.01)
+                self.place_image(unrepairable_position, self.img_unrepairable, zoom=TRUCK_SCALE *0.6)
             self.place_image(truck_data['position'], img_truck, zoom=TRUCK_SCALE)
             self.ax.text(truck_data['position'][0], truck_data['position'][1] - 0.035, truck, ha='center', fontsize=3,
                          color='black')

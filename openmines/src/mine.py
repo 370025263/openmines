@@ -50,6 +50,7 @@ class Mine:
     def monitor_status(self, env, monitor_interval=1):
         """监控卸载区的产量、服务次数等信息
             监控道路的状态
+
         """
         while True:
             """
@@ -121,6 +122,11 @@ class Mine:
             """
             self.update_road_status()
             # 等待下一个监控时间点
+            """
+            3.更新矿车的breakdown(repair)状态
+            """
+            for truck in self.trucks:
+                truck.sample_breakdown()
             yield env.timeout(monitor_interval)
 
     def update_road_status(self):

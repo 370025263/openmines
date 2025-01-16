@@ -68,6 +68,7 @@ class Truck:
         self.expected_working_time_until_unrepairable = 60*24*7*7  # in minutes
         self.repair_avg_time = 10
         self.repair_std_time = 3
+        self.repair_time = 0
         # truck status
         self.status = "idle"
         self.truck_load = 0  # in tons, the current load of the truck
@@ -136,19 +137,46 @@ class Truck:
             # 如果发生故障，记录故障事件并进行维修
             breakdown_event = Event(self.last_breakdown_time, "TruckEvent:breakdown", f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes',
                       info={"name": self.name, "status": "breakdown",
-                            "start_time": self.env.now, "end_time": self.env.now + repair_time})
+                            "repair_time": repair_time,
+                            "start_location": self.current_location.name,
+                            "target_location": self.target_location.name,
+                            "start_time": self.last_breakdown_time, "end_time": self.last_breakdown_time + repair_time})
             self.event_pool.add_event(breakdown_event)
             self.mine.random_event_pool.add_event(breakdown_event)
             self.logger.info(f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes at {self.last_breakdown_time}')
             # 进行维修（暂停运行）
             self.status = "repairing"
             yield self.env.timeout(repair_time)
+            self.repair_time = 0
+            self.status = "moving"
         """
         2.车辆运行过程中的堵车随机事件模拟
         """
         # 分析当前道路中的车辆情况，并随机生成一个延迟时间用来模拟交通堵塞
         # 获取其他车辆的引用
         other_trucks = self.mine.trucks
+        # 读取已经存在的堵车事件
+        jam_events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
+        pre_jam_time = 0
+        pre_jam_count = 0
+        for jam_event in jam_events:
+            """
+            info={"name": self.name, "status": "jam", "speed": 0,
+                                                  "start_location": self.current_location.name,
+                                                    "end_location": self.target_location.name,
+                                                    "jam_position": jam_position,
+                                                  "start_time": self.env.now, "est_end_time":
+            """
+            if jam_event.info["start_location"] == self.current_location.name and jam_event.info["end_location"] == self.target_location.name \
+                    and jam_event.info["start_time"] <= self.env.now and jam_event.info["est_end_time"] >= self.env.now:
+                jam_time = jam_event.info["est_end_time"] - self.env.now  # 在车辆出发的这一刻，堵车事件还会持续的时间长度
+                jam_position = jam_event.info["jam_position"]
+                time_to_jam = jam_position * duration  # 车辆到达堵车区域的时间
+                pre_jam_time += max(0, jam_time - time_to_jam)
+                pre_jam_count += 1
+        if pre_jam_count > 0:
+            self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] is facing {pre_jam_time} mins delay caused by {pre_jam_count} pre-existing jam events on Road from {self.current_location.name} to {self.target_location.name}")
+
         # 筛选出出发地和目的地跟本车相同的车辆
         other_trucks_on_road = [truck for truck in other_trucks if truck.current_location == self.current_location and
                                 truck.target_location == self.target_location]
@@ -173,30 +201,27 @@ class Truck:
         # 正规化总的堵车概率
         total_prob = total_prob / len(truck_positions)
         # 使用蒙特卡洛方法来决定是否会发生堵车
-        try:
-            if np.sum(total_prob) == 0:
-                probabilities = np.ones_like(total_prob) / len(total_prob)
-            else:
-                probabilities = total_prob / (np.sum(total_prob))
-            jam_position = np.random.choice(x, p=probabilities)
-        except:
-            print("bug")
+        if np.sum(total_prob) == 0:
+            probabilities = np.ones_like(total_prob) / len(total_prob)
+        else:
+            probabilities = total_prob / (np.sum(total_prob))
+        jam_position = np.random.choice(x, p=probabilities)
+
         # 在jam_position处使用weibull分布，采样一个可能的堵车时间
         jam_time = np.random.weibull(2) * 10
         time_to_jam = jam_position * duration
         if time_to_jam < jam_time:
             # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
-            is_jam = True if len(truck_positions) > 3 else False
+            # 堵车事件会影响一定距离内的后来车辆
             self.mine.random_event_pool.add_event(Event(self.env.now + time_to_jam, "RoadEvent:jam",
-                                                        f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] is jammed at road from {self.current_location.name} '
+                                                        f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] freshly jammed by new jam-event at road from {self.current_location.name} '
                                                         f'to {self.target_location.name} for {jam_time:.2f} minutes',
                                                         info={"name": self.name, "status": "jam", "speed": 0,
                                                               "start_location": self.current_location.name,
                                                                 "end_location": self.target_location.name,
-                                                              "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
-            self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
-        else:
-            is_jam = False
+                                                                "jam_position": jam_position,
+                                                              "start_time": self.env.now, "est_end_time": self.env.now + jam_time}))  # 这里之前是"est_end_time": self.env.now + time_to_jam + jam_time， 现在可能会有暂时性BUG，修了更好。
+            self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] freshly jammed by new jam-event at road from {self.current_location.name} to {self.target_location.name} for {jam_time-time_to_jam:.2f} minutes")
 
 
         """
@@ -226,12 +251,12 @@ class Truck:
 
         self.event_pool.add_event(Event(self.env.now, event_name, f'Truck:[{self.name}] moves at {target_location.name}',
                                         info={"name": self.name, "status": event_name, "speed": manual_speed if manual_speed is not None else self.truck_speed,
-                                              "start_time": self.env.now, "est_end_time": self.env.now+duration, "end_time": None,
+                                              "start_time": self.env.now, "est_end_time": self.env.now+duration+ max(0,jam_time-time_to_jam) + pre_jam_time, "end_time": None,
                                               "start_location": self.current_location.name,
                                               "target_location": target_location.name,
                                               "distance": distance, "duration": None}))
         self.status = "moving"
-        yield self.env.timeout(duration+is_jam*jam_time)
+        yield self.env.timeout(duration+ max(0,jam_time-time_to_jam) + pre_jam_time)
         # 补全数据
         last_move_event = self.event_pool.get_last_event(type=event_name, strict=True)
         last_move_event.info["end_time"] = self.env.now
@@ -537,10 +562,10 @@ class Truck:
         coverage = (current_time - self.journey_start_time)/total_travel_time
         return coverage
 
-    def check_vehicle_availability(self):
+    def sample_breakdown(self):
         """
-        使用指数分布对卡车的可用性进行建模并采样，可能出现的状况包括故障需要维修。
-        :return: 维修持续时间（如果发生故障)
+        从指数分布中采样故障时间
+        :return:
         """
         # 使用指数分布计算故障发生的时间（载具正常工作时长）
         time_to_breakdown = np.random.exponential(self.expected_working_time_without_breakdown)
@@ -550,15 +575,16 @@ class Truck:
             repair_time = np.random.normal(self.repair_avg_time, self.repair_std_time)
             repair_time = max(repair_time, 0)  # 确保维修时间为正值
             # 更新最后一次故障时间
-            self.last_breakdown_time = self.last_breakdown_time + time_to_breakdown
-            """
-            TODO: 维修的判断依据有问题 很有可能多次采样叠加后self.last_breakdown_time依然是小于当前时间的
-            这里明天再修复 今天弄不了 脑子不好用了
-            """
-            return repair_time  # 发生故障则返回维修时间
+            self.last_breakdown_time = self.env.now  # self.last_breakdown_time + time_to_breakdown
+            self.repair_time = repair_time
+
+    def check_vehicle_availability(self):
+        """
+        使用指数分布对卡车的可用性进行建模并采样，可能出现的状况包括故障需要维修。
+        :return: 维修持续时间（如果发生故障)
+        """
         # 如果车辆发生无法维修的损坏，返回None；使用指数分布计算故障发生的时间
         # self.expected_working_time_until_unrepairable
-
         if self.env.now >= random.expovariate(1.0 / self.expected_working_time_until_unrepairable):
             return None
-        return 0  # 未发生故障则返回0维修时间
+        return self.repair_time  # 发生故障则返回维修时间
