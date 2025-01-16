@@ -72,15 +72,15 @@ class BaseDispatcher:
             if method_type == "give_init_order":
                 self.init_order_count += 1
                 self.init_order_time += elapsed_time
-                self.init_orders.append(result)
+                self.init_orders.append(int(result))
             elif method_type == "give_haul_order":
                 self.haul_order_count += 1
                 self.haul_order_time += elapsed_time
-                self.haul_orders.append(result)
+                self.haul_orders.append(int(result))
             elif method_type == "give_back_order":
                 self.back_order_count += 1
                 self.back_order_time += elapsed_time
-                self.back_orders.append(result)
+                self.back_orders.append(int(result))
 
             self.total_order_count = self.init_order_count + self.haul_order_count + self.back_order_count
             self.total_order_time = self.init_order_time + self.haul_order_time + self.back_order_time
