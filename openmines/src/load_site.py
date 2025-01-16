@@ -1,5 +1,8 @@
 import simpy
 
+from openmines.src.utils.event import EventPool
+
+
 class ParkingLot:
     def __init__(self,name:str,position:tuple):
         self.name = name
@@ -116,7 +119,9 @@ class Shovel:
         self.last_service_done_time = 0  # the last service done time of shovel, the moment that the shovel finish loading a truck
         self.est_waiting_time = 0  # the estimated waiting time for the next truck
         # shovel breakdown
+        self.event_pool = EventPool()
         self.last_breakdown_time = 0  # 上一次故障时间
+        self.repair = False  # 是否正在维修
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -128,6 +133,7 @@ class Shovel:
         while True:
             # 获取铲车信息
             self.status[int(env.now)] = {
+                "repair": self.repair,
                 "produced_tons": self.produced_tons,
                 "service_count": self.service_count,
             }

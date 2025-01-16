@@ -249,6 +249,7 @@ class TickGenerator:
                     shovel_cur_state = shovel.status.get(cur_time,{"produced_tons":0,"service_count":0})
                     shovel_tick = {
                         "name":shovel.name,
+                        "repair":shovel.status[cur_time].get("repair", False),
                         "tons":shovel_cur_state["produced_tons"],
                         "service_count":shovel_cur_state["service_count"],
                         "time":cur_time,

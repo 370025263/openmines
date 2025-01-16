@@ -38,6 +38,7 @@ class VisualGrapher:
         self.img_truck_unhauling = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_unhauling.png'))
         self.img_truck_initing = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_initing.png'))
         self.img_dump = mpimg.imread(os.path.join(script_directory, 'materials', 'dump.png'))
+        self.img_repair = mpimg.imread(os.path.join(script_directory, 'materials', 'repair.png'))
 
     def update_progress(self, pbar):
         pbar.update()
@@ -112,6 +113,9 @@ class VisualGrapher:
         # 5. 绘制铲车并展示其产量和服务次数
         for shovel, shovel_data in tick_data['shovel_states'].items():
             self.place_image(shovel_data['position'], self.img_shovel, zoom=SHOVEL_SCALE)
+            if shovel_data["repair"]:
+                repair_position = (shovel_data['position'][0]+0.02, shovel_data['position'][1] + 0.01)
+                self.place_image(repair_position, self.img_repair, zoom=SHOVEL_SCALE*0.2)
             # 在图像底部展示铲车名称
             self.ax.text(shovel_data['position'][0], shovel_data['position'][1] - 0.04, shovel,
                          ha='center', va='bottom', fontsize=3)
