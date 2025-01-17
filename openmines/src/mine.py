@@ -50,7 +50,8 @@ class Mine:
     def monitor_status(self, env, monitor_interval=1):
         """监控卸载区的产量、服务次数等信息
             监控道路的状态
-
+            Trigger BreakDown for truck
+            Trigger RoadEvent:jam
         """
         while True:
             """
@@ -127,6 +128,30 @@ class Mine:
             """
             for truck in self.trucks:
                 truck.sample_breakdown()
+
+            """
+            4.在每个单位时间内，根据道路的交通流，触发堵车事件并存入池中.
+                每个矿车在出发的时候就会受到道路堵车事件的影响(truck.py)
+            """
+            # 遍历每一个道路
+            ## Init Road
+            for i in range(self.road.load_site_num):
+                charging_site = self.charging_site
+                load_site = self.load_sites[i]
+                # 从charging到load的道路
+                self.road.road_jam_sampling(start=charging_site, end=load_site)
+            ## Haul Road
+            for i in range(self.road.load_site_num):
+                for j in range(self.road.dump_site_num):
+                    load_site = self.load_sites[i]
+                    dump_site = self.dump_sites[j]
+                    self.road.road_jam_sampling(start=load_site, end=dump_site)
+            ## Unhaul Road
+            for j in range(self.road.dump_site_num):
+                for i in range(self.road.load_site_num):
+                    load_site = self.load_sites[i]
+                    dump_site = self.dump_sites[j]
+                    self.road.road_jam_sampling(start=dump_site, end=load_site)
             yield env.timeout(monitor_interval)
 
     def update_road_status(self):

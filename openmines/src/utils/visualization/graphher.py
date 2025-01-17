@@ -145,6 +145,16 @@ class VisualGrapher:
             self.ax.text(truck_data['position'][0], truck_data['position'][1] - 0.035, truck, ha='center', fontsize=3,
                          color='black')
 
+        # 绘制交通堵塞事件
+        jam_positions = mine_data.get("jams", {}).get("position", [])
+        lasting_times = mine_data.get("jams", {}).get("last_times", [])
+
+        for jam_position, lasting_time in zip(jam_positions, lasting_times):
+            # 绘制交通堵塞的位置
+            self.ax.plot(jam_position[0], jam_position[1], 'ro', markersize=5)  # 使用红色点（'ro'）
+            # 可选：显示堵塞持续时间
+            self.ax.text(jam_position[0], jam_position[1] + 0.02, f"{lasting_time:.2f}s", ha='center', fontsize=4,
+                         color='red')
 
     def place_image(self, xy, img, zoom=1):
         """

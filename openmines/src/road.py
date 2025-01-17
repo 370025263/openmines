@@ -1,6 +1,6 @@
 from __future__ import annotations
-import simpy
 import numpy as np
+from scipy.stats import norm
 import random
 
 from openmines.src.charging_site import ChargingSite
@@ -47,6 +47,79 @@ class Road:
         self.env = mine.env
         self.mine = mine
         self.logger = self.mine.global_logger.get_logger("Road")
+
+
+    def truck_on_road(self, start, end)->list["Truck"]:
+        """
+        返回从start到end的道路上的车辆列表(状态为在路上而不是已经到达)
+        :param start:
+        :param end:
+        :return:
+        """
+        if self.env.now < 2:
+            return []
+
+        # 从start到end的道路上的车辆列表
+        truck_list = []
+        for truck in self.mine.trucks:
+            if truck.current_location.name == start.name and truck.target_location.name == end.name and truck.status == "moving":
+                truck_list.append(truck)
+        return truck_list
+
+    def road_jam_sampling(self, start, end):
+        """
+        从start到end的道路上的堵车采样，将新事件放入mine的event-pool
+        :param start: 开始地点对象
+        :param end: 结束地点对象
+        :return:无
+        """
+        # 从start到end的道路上的车辆列表
+        trucks_on_road = self.truck_on_road(start, end)
+        if len(trucks_on_road) == 0:
+            return
+        else:
+            pass
+        # 从start到end的道路长度
+        distance = self.get_distance(trucks_on_road[0], end, enable_event=False)
+        # 为每个同路的车辆根据当前时间计算route_coverage数值
+        for truck in trucks_on_road:
+            truck.journey_coverage = truck.get_route_coverage(distance)
+        # 假设每个车辆导致堵车的概率在route_coverage上满足正态分布，均值为route_coverage，方差为0.1
+        # other_trucks_on_road中的每个车导致堵车的概率会叠加在一起取平均成为最终的堵车概率分布
+        truck_positions = [truck.journey_coverage for truck in trucks_on_road]
+        # 每个卡车的正态分布的标准差
+        sd = 0.1  # 根据3sigma原则，这个值代表这个车辆对堵车的影响会在+-0.3总路程的范围内
+        # 位置的范围
+        x = np.linspace(0, 1, 1000)
+        # 初始化堵车的概率为0
+        total_prob = np.zeros_like(x)
+        # 对每辆卡车
+        for i, position in enumerate(truck_positions):
+            # 计算在每个位置的堵车概率
+            prob = norm.pdf(x, position, sd)
+            # 将这个卡车的堵车概率加到总的堵车概率上
+            total_prob = total_prob + prob
+        # 正规化总的堵车概率
+        total_prob = total_prob / len(truck_positions)
+        # 使用蒙特卡洛方法来决定是否会发生堵车
+        if np.sum(total_prob) == 0:
+            probabilities = np.ones_like(total_prob) / len(total_prob)
+        else:
+            probabilities = total_prob / (np.sum(total_prob))
+        jam_position = np.random.choice(x, p=probabilities)
+        # 在jam_position处使用weibull分布，采样一个可能的堵车时间
+        jam_time = np.random.weibull(2) * 10
+        # 采样完成，放入pool
+        self.mine.random_event_pool.add_event(Event(self.env.now, "RoadEvent:jam",
+                                                    f'Time:<{self.env.now}> New RoadEvent:jam at road({jam_position}) from {start.name} '
+                                                    f'to {end.name} for {jam_time:.2f} minutes',
+                                                    info={"name": "RoadEvent:jam", "status": "jam", "speed": 0,
+                                                          "start_location": start.name,
+                                                          "end_location": end.name,
+                                                          "jam_position": jam_position,
+                                                          "start_time": self.env.now,
+                                                          "est_end_time": self.env.now + jam_time}))
+
 
     def check_availability(self, current_site, target_site):
         """

@@ -51,6 +51,7 @@ class TickGenerator:
         dump_sites = self.mine.dump_sites
         charging_site = self.mine.charging_site
         trucks = self.mine.trucks
+        jam_events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
 
         # 遍历产生每个tick
         for tick in range(self.tick_num):
@@ -62,6 +63,32 @@ class TickGenerator:
             shovel_states = dict()
             dumper_states = dict()
 
+            # ******可视化交通堵塞******
+            jam_positions = []
+            lasting_times = []
+            for jam_event in jam_events:
+                if jam_event.info["start_time"] <= cur_time < jam_event.info["est_end_time"]:
+                    jam_position = jam_event.info["jam_position"]
+                    #jam_duration = jam_event.info["est_end_time"] - jam_event.info["start_time"]
+                    start_location_name = jam_event.info["start_location"]
+                    target_location_name = jam_event.info["end_location"]
+                    target_location = self.mine.get_dest_obj_by_name(target_location_name)
+                    start_location = self.mine.get_dest_obj_by_name(start_location_name)
+                    direction = np.array(target_location.position) - np.array(start_location.position)
+                    # OUTPUT
+                    jam_position = np.array(start_location.position) + direction * jam_position
+                    lasting_time = jam_event.info["est_end_time"] - cur_time
+                    # 绘制一个红色的点再图中
+                    jam_positions.append(jam_position.tolist())
+                    lasting_times.append(lasting_time)
+            jam_tick = {
+                "name":f"jams",
+                "time":cur_time,
+                "position":jam_positions,
+                "last_times":lasting_times,
+            }
+
+            # ******可视化卡车******
             for truck in self.mine.trucks:
                 event_pool = truck.event_pool
                 # 判断卡车状态
@@ -213,7 +240,7 @@ class TickGenerator:
                 if "breakdown" in past_events[-1].event_type:
                     repair_event = past_events[-1]
                     # 车辆损坏过程中，保持原位置
-                    if repair_event.info["start_time"] < cur_time <= repair_event.info["end_time"]:
+                    if repair_event.info["start_time"] <= cur_time <= repair_event.info["end_time"]:
                         status = 6
                         # 计算卡车位置
                         # 车辆损坏后位置=上一时间位置
@@ -232,8 +259,9 @@ class TickGenerator:
                             "start_time"]) / (past_events[-2].info["end_time"] - repair_event.info["repair_time"] -
                                               past_events[-2].info["start_time"])  # duration和堵车的时间
                         # 方向计算
+                        start_location = self.mine.get_dest_obj_by_name(past_events[-1].info["start_location"])
                         target_load_site = self.mine.get_dest_obj_by_name(past_events[-1].info["target_location"])
-                        direction = np.array(target_load_site.position) - np.array(charging_site.position)
+                        direction = np.array(target_load_site.position) - np.array(start_location.position)
                         truck_position = np.array(charging_site.position) + time_ratio * direction
                         truck.truck_position = truck_position
 
@@ -252,6 +280,9 @@ class TickGenerator:
                     "position":list(truck_position if truck_position is not None else (0.5,0.5)),
                 }
                 truck_states[truck.name] = truck_state
+                if cur_time >= 6:
+                    if np.array_equal(truck.truck_position, np.array([0,0])) or np.array_equal(truck_position, np.array([0,0])):
+                        print("wrong")
 
             # 统计每一个loadsite的信息
             for loadsite in self.mine.load_sites:
@@ -338,6 +369,8 @@ class TickGenerator:
                 "load_unload_truck_count": mine_status["load_unload_truck_count"],
                 "moving_truck_count": mine_status["moving_truck_count"],
                 "repairing_truck_count": mine_status["repairing_truck_count"],
+                # visual events
+                "jams": jam_tick,
                 # event stats
                 "road_jam_count": mine_status["road_jam_count"],
                 "road_repair_count": mine_status["road_repair_count"],

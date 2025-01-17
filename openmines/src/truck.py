@@ -153,8 +153,6 @@ class Truck:
         2.车辆运行过程中的堵车随机事件模拟
         """
         # 分析当前道路中的车辆情况，并随机生成一个延迟时间用来模拟交通堵塞
-        # 获取其他车辆的引用
-        other_trucks = self.mine.trucks
         # 读取已经存在的堵车事件
         jam_events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
         pre_jam_time = 0
@@ -176,53 +174,6 @@ class Truck:
                 pre_jam_count += 1
         if pre_jam_count > 0:
             self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] is facing {pre_jam_time} mins delay caused by {pre_jam_count} pre-existing jam events on Road from {self.current_location.name} to {self.target_location.name}")
-
-        # 筛选出出发地和目的地跟本车相同的车辆
-        other_trucks_on_road = [truck for truck in other_trucks if truck.current_location == self.current_location and
-                                truck.target_location == self.target_location]
-        # 为每个同路的车辆根据当前时间计算route_coverage数值
-        for truck in other_trucks_on_road:
-            truck.journey_coverage = truck.get_route_coverage(distance)
-        # 假设每个车辆导致堵车的概率在route_coverage上满足正态分布，均值为route_coverage，方差为0.1
-        # other_trucks_on_road中的每个车导致堵车的概率会叠加在一起取平均成为最终的堵车概率分布
-        truck_positions = [truck.journey_coverage for truck in other_trucks_on_road]
-        # 每个卡车的正态分布的标准差
-        sd = 0.1  # 根据3sigma原则，这个值代表这个车辆对堵车的影响会在+-0.3总路程的范围内
-        # 位置的范围
-        x = np.linspace(0, 1, 1000)
-        # 初始化堵车的概率为0
-        total_prob = np.zeros_like(x)
-        # 对每辆卡车
-        for i, position in enumerate(truck_positions):
-            # 计算在每个位置的堵车概率
-            prob = norm.pdf(x, position, sd)
-            # 将这个卡车的堵车概率加到总的堵车概率上
-            total_prob = total_prob + prob
-        # 正规化总的堵车概率
-        total_prob = total_prob / len(truck_positions)
-        # 使用蒙特卡洛方法来决定是否会发生堵车
-        if np.sum(total_prob) == 0:
-            probabilities = np.ones_like(total_prob) / len(total_prob)
-        else:
-            probabilities = total_prob / (np.sum(total_prob))
-        jam_position = np.random.choice(x, p=probabilities)
-
-        # 在jam_position处使用weibull分布，采样一个可能的堵车时间
-        jam_time = np.random.weibull(2) * 10
-        time_to_jam = jam_position * duration
-        if time_to_jam < jam_time:
-            # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
-            # 堵车事件会影响一定距离内的后来车辆
-            self.mine.random_event_pool.add_event(Event(self.env.now + time_to_jam, "RoadEvent:jam",
-                                                        f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] freshly jammed by new jam-event at road from {self.current_location.name} '
-                                                        f'to {self.target_location.name} for {jam_time:.2f} minutes',
-                                                        info={"name": self.name, "status": "jam", "speed": 0,
-                                                              "start_location": self.current_location.name,
-                                                                "end_location": self.target_location.name,
-                                                                "jam_position": jam_position,
-                                                              "start_time": self.env.now, "est_end_time": self.env.now + jam_time}))  # 这里之前是"est_end_time": self.env.now + time_to_jam + jam_time， 现在可能会有暂时性BUG，修了更好。
-            self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] freshly jammed by new jam-event at road from {self.current_location.name} to {self.target_location.name} for {jam_time-time_to_jam:.2f} minutes")
-
 
         """
         3.车辆完全损坏的模拟(当车辆完全损坏就会被移除,车辆到指定时间后不会再发生移动，而是停留在原地
@@ -251,12 +202,12 @@ class Truck:
 
         self.event_pool.add_event(Event(self.env.now, event_name, f'Truck:[{self.name}] moves at {target_location.name}',
                                         info={"name": self.name, "status": event_name, "speed": manual_speed if manual_speed is not None else self.truck_speed,
-                                              "start_time": self.env.now, "est_end_time": self.env.now+duration+ max(0,jam_time-time_to_jam) + pre_jam_time, "end_time": None,
+                                              "start_time": self.env.now, "est_end_time": self.env.now + duration + pre_jam_time, "end_time": None,
                                               "start_location": self.current_location.name,
                                               "target_location": target_location.name,
                                               "distance": distance, "duration": None}))
         self.status = "moving"
-        yield self.env.timeout(duration+ max(0,jam_time-time_to_jam) + pre_jam_time)
+        yield self.env.timeout(duration + pre_jam_time)
         # 补全数据
         last_move_event = self.event_pool.get_last_event(type=event_name, strict=True)
         last_move_event.info["end_time"] = self.env.now
@@ -545,6 +496,7 @@ class Truck:
         获取一次循环的路程覆盖率 0-1
         0代表刚刚出发 1代表完成
         这里只是一种近似，没有考虑到当前路途的交通情况
+        TODO: 考虑到当前路途的交通情况, 车辆损坏情况等，作为卡车属性进行更新
         :return:
         """
         assert distance > 0, "distance must be greater than 0"
