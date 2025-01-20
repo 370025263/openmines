@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 from simpy.resources.resource import Request
 
-
-
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dump_site import DumpSite, Dumper
 from openmines.src.load_site import LoadSite, Shovel

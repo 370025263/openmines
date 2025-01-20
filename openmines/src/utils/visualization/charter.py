@@ -109,6 +109,129 @@ class Charter:
         # 最后：在命令行打印出 final_table
         self._print_table_in_terminal(final_table)
 
+    def draw_scene_based_fleet_ablation_experiment(self, results, original_fleet_size):
+        """
+        results: { dispatcher_name: { 'fleet_sizes': [...], 'productions': [...] } }
+        original_fleet_size: int
+        只画一张对比图, 不输出表格
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        fig, ax = plt.subplots(figsize=(5,4))
+
+        for dispatcher_name, data in results.items():
+            fsizes = data['fleet_sizes']
+            prods = data['productions']
+            ax.plot(fsizes, prods, marker='o', label=dispatcher_name)
+            arr = np.array(prods)
+            if len(arr)>0:
+                mx_i = arr.argmax()
+                mn_i = arr.argmin()
+                ax.plot(fsizes[mx_i], prods[mx_i], 'ko', mfc='black')
+                ax.plot(fsizes[mn_i], prods[mn_i], 'ko', mfc='black')
+
+        # 画竖线
+        ax.axvline(x=original_fleet_size, color='gray', linestyle='--', label='Original Fleet')
+
+        # 调整范围
+        all_fs = []
+        all_pd = []
+        for d_ in results.values():
+            all_fs += d_['fleet_sizes']
+            all_pd += d_['productions']
+        if all_fs:
+            fs_min, fs_max = min(all_fs), max(all_fs)
+            pd_min, pd_max = min(all_pd), max(all_pd)
+            margin_x = 0.05*(fs_max - fs_min) if fs_max>fs_min else 1
+            margin_y = 0.05*(pd_max - pd_min) if pd_max>pd_min else 1
+            ax.set_xlim(fs_min - margin_x, fs_max + margin_x)
+            ax.set_ylim(pd_min - margin_y, pd_max + margin_y)
+
+        ax.set_xlabel("Fleet Size", fontsize=10, fontweight='bold')
+        ax.set_ylabel("Production (tons)", fontsize=10, fontweight='bold')
+        ax.set_title("Scene-based Fleet Ablation", fontsize=12, fontweight='bold')
+        ax.legend(fontsize=8, loc='best')
+
+        plt.tight_layout()
+        self.fig_img = fig  # 覆盖 self.fig_img
+
+    def draw_algo_based_fleet_ablation_experiment(self, scenes_data, baseline, target):
+        """
+        Bilingual comment:
+        scenes_data 结构:
+          {
+            "sceneA": { "fleet_sizes": [...], "ratios": [...] },
+            "sceneB": { "fleet_sizes": [...], "ratios": [...] },
+            ...
+          }
+        baseline / target 用于标题或legend说明, 但实际我们只画 ratio = target/baseline.
+
+        English summary:
+        - For each scene, x-axis = fleet_sizes, y-axis = ratio (target / baseline).
+        - Each scenario => single line.
+        """
+        import matplotlib.pyplot as plt
+        import numpy as np
+
+        fig, ax = plt.subplots(figsize=(5, 4))
+
+        color_map = plt.cm.get_cmap('tab10', len(scenes_data))
+        i = 0
+
+        all_fs = []
+        all_ratio = []
+
+        for scene_name, data in scenes_data.items():
+            fsizes = data['fleet_sizes']
+            ratio = data['ratios']  # ratio array
+
+            c = color_map(i)
+            i += 1
+
+            # Plot one line for this scene
+            ax.plot(fsizes, ratio, marker='o', color=c, label=f"{scene_name}")
+            arr_r = np.array(ratio)
+            if len(arr_r) > 0:
+                rmax_i = arr_r.argmax()
+                rmin_i = arr_r.argmin()
+                # Mark the highest/lowest points as black dots
+                ax.plot(fsizes[rmax_i], ratio[rmax_i], 'ko', mfc='black')
+                ax.plot(fsizes[rmin_i], ratio[rmin_i], 'ko', mfc='black')
+
+            all_fs += fsizes
+            all_ratio += ratio
+
+        # Adjust x,y-limits
+        if all_fs:
+            fs_min, fs_max = min(all_fs), max(all_fs)
+            r_min, r_max = min(all_ratio), max(all_ratio)
+            margin_x = 0.05 * (fs_max - fs_min) if fs_max > fs_min else 1
+            margin_y = 0.05 * (r_max - r_min) if r_max > r_min else 0.1
+            ax.set_xlim(fs_min - margin_x, fs_max + margin_x)
+            ax.set_ylim(r_min - margin_y, r_max + margin_y if r_max > 0 else 0.1)
+
+        # Label
+        ax.set_xlabel("Fleet Size", fontsize=10, fontweight='bold')
+        ax.set_ylabel("Production Ratio (target / baseline)", fontsize=10, fontweight='bold')
+        ax.set_title(f"Ablation: {baseline} vs {target}", fontsize=12, fontweight='bold')
+        ax.legend(fontsize=8, loc='best')
+
+        plt.tight_layout()
+        self.fig_img = fig
+
+    def save_ablation(self, tag="ablation"):
+        """
+        仅保存 self.fig_img (消融图), 并使用单独命名, 不保存表格/产量图.
+        """
+        if not self.fig_img:
+            print("[save_ablation] No ablation figure found.")
+            return
+        ablation_filename = self.config_name.replace('.json','') + f"_{tag}.tiff"
+        ablation_path = self.result_path / ablation_filename
+        self.fig_img.savefig(ablation_path, dpi=300, format='tiff')
+        print(f"[save_ablation] Saved ablation figure -> {ablation_path}")
+
     def _print_table_in_terminal(self, final_table):
         """
         使用 Rich 库在命令行中打印一个自适应、紧凑、支持自动换行的表格。
