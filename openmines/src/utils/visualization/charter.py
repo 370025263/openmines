@@ -7,6 +7,8 @@ from matplotlib import pyplot as plt
 from pathlib import Path
 
 from matplotlib.font_manager import FontProperties
+from tabulate import tabulate  # ★ 用于在终端打印表格
+
 
 # 设置Times New Roman字体
 times_new_roman = FontProperties(family='Times New Roman', size=8)
@@ -103,6 +105,43 @@ class Charter:
         self.init_orders_fig = self.plot_histogram(init_orders_list, prefix_list=dispatcher_name_list, entre_names=load_site_names, title="LoadSite Orders")
         self.haul_orders_fig = self.plot_histogram(haul_orders_list, prefix_list=dispatcher_name_list, entre_names=dump_site_names, title="DumpSite Orders")
         self.back_orders_fig = self.plot_histogram(back_orders_list, prefix_list=dispatcher_name_list, entre_names=dump_site_names, title="BackSite Orders")
+
+        # 最后：在命令行打印出 final_table
+        self._print_table_in_terminal(final_table)
+
+    def _print_table_in_terminal(self, final_table):
+        """
+        使用 Rich 库在命令行中打印一个自适应、紧凑、支持自动换行的表格。
+        """
+        try:
+            import pandas as pd
+            from rich.table import Table
+            from rich.console import Console
+            print("Rich is installed!")
+        except ImportError:
+            print("Rich is not installed. Please run 'pip install rich'.")
+
+
+        df = pd.DataFrame(final_table)
+
+        console = Console()
+
+        # 创建一个 Rich Table，自动展开并显示行分割线
+        table = Table(title="Final Metrics Table", show_lines=True, expand=True)
+
+        # 遍历 DataFrame 的列名，动态添加表格列
+        # overflow="fold" + no_wrap=False 可以在列内容过长时自动换行
+        for col_name in df.columns:
+            table.add_column(str(col_name), overflow="fold", no_wrap=False)
+
+        # 依次添加每一行的数据
+        for _, row in df.iterrows():
+            row_values = [str(val) for val in row.values]
+            table.add_row(*row_values)
+
+        # 在终端打印该 Rich 表格
+        console.print(table)
+        print("----- End of Table -----\n")
 
     @staticmethod
     def plot_histogram(data_list, prefix_list, entre_names=None, title="Histogram of SiteOrder", show=False):
