@@ -163,6 +163,9 @@ class VisualGrapher:
         :param img: 图像数组
         :param zoom: 图像的缩放级别
         """
+        # 当xy为负数时，表示图像不可见
+        if xy[0] < 0 or xy[1] < 0:
+            return
         im_offset = OffsetImage(img, zoom=zoom)
         ab = AnnotationBbox(im_offset, xy, frameon=False, box_alignment=(0.5, 0.5))
         self.ax.add_artist(ab)

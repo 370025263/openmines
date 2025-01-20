@@ -44,6 +44,7 @@ class Charter:
             total_wait_time = states['summary']['TotalWaitTime']
             road_jams = states['summary']['RoadJams']
             produced_tons = states['produced_tons_list'][-1]
+            total_order_count = states['summary']['total_order_count']
 
             # 绘制产量曲线
             axs[0].plot(states['times'], states['produced_tons_list'], label=dispatcher_name, linewidth=0.7)
@@ -56,7 +57,9 @@ class Charter:
                 'Decision Latency (ms)': f"{round(decision_latency, 1):.1f}",
                 'Matching Factor': f"{round(matching_factor, 2):.2f}",
                 'Total Wait Time': f"{round(total_wait_time, 2):.2f}",
-                "Road Jams": road_jams
+                "Road Jams": road_jams,
+                "TruckTrips": total_order_count,
+                "Jam Ratio": f"{round(road_jams / states['summary']['total_order_count'], 2):.2f}"
             })
         # 设置坐标轴刻度的字体大小
         axs[0].tick_params(axis='both', which='major', labelsize=6)

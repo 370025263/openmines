@@ -265,6 +265,12 @@ class TickGenerator:
                         truck_position = np.array(charging_site.position) + time_ratio * direction
                         truck.truck_position = truck_position
 
+                if past_events[-1].event_type=="ORDER":
+                    status = 8
+                    # 计算卡车位置
+                    # 车辆损坏后位置=上一时间位置
+                    truck_position = truck.current_location.position  # 已经处理过
+                    truck.truck_position = truck_position
 
                 if "unrepairable" in past_events[-1].event_type:
                     status = 7
@@ -273,6 +279,7 @@ class TickGenerator:
                     # 获取chargingSite位置
                     truck_position = np.array(self.mine.charging_site.position).astype(float)  # 已经处理过
 
+                truck_position = truck.truck_position
                 truck_state = {
                     "name":truck.name,
                     "time":cur_time,
@@ -280,9 +287,6 @@ class TickGenerator:
                     "position":list(truck_position if truck_position is not None else (0.5,0.5)),
                 }
                 truck_states[truck.name] = truck_state
-                if cur_time >= 6:
-                    if np.array_equal(truck.truck_position, np.array([0,0])) or np.array_equal(truck_position, np.array([0,0])):
-                        print("wrong")
 
             # 统计每一个loadsite的信息
             for loadsite in self.mine.load_sites:

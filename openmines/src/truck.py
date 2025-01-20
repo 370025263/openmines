@@ -61,6 +61,7 @@ class Truck:
         self.target_location = None
         self.journey_start_time = 0
         self.journey_coverage = None
+        self.pre_jam_time = 0
         self.last_breakdown_time = 0
         self.event_pool = EventPool()
         # the probalistics of the truck
@@ -172,6 +173,7 @@ class Truck:
                 time_to_jam = jam_position * duration  # 车辆到达堵车区域的时间
                 pre_jam_time += max(0, jam_time - time_to_jam)
                 pre_jam_count += 1
+                self.pre_jam_time = pre_jam_time
         if pre_jam_count > 0:
             self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] is facing {pre_jam_time} mins delay caused by {pre_jam_count} pre-existing jam events on Road from {self.current_location.name} to {self.target_location.name}")
 
@@ -215,6 +217,7 @@ class Truck:
         # after arrival set current location
         assert type(self.current_location) != type(target_location), f"current_site and target_site should not be the same type of site "
         self.current_location = target_location
+        self.pre_jam_time = 0
 
     def load(self, shovel:Shovel):
         shovel_tons = shovel.shovel_tons
@@ -242,7 +245,7 @@ class Truck:
         dumper.dumper_tons += self.truck_load
         self.total_load_count += self.truck_load
         self.service_count += 1
-        self.truck_cycle_time = (self.env.now - self.last_breakdown_time) / self.service_count
+        self.truck_cycle_time = (self.env.now - self.first_order_time) / self.service_count
         self.truck_load = 0
         dumper.service_count += 1
         dumper.last_service_done_time = self.env.now  # 记录卸载点上次服务完成时间
@@ -353,7 +356,7 @@ class Truck:
                 # **铲车维护逻辑**
                 # 维护事件的发生由指数分布采样(lambda=1/480)
                 # 发生后维护时间由正态分布采样u=45, sig=5
-                time_to_next_maintenance = np.random.exponential(scale=480)  # 平均480分钟
+                time_to_next_maintenance = np.random.exponential(scale=60*24)  # 平均480分钟
                 if self.env.now >= shovel.last_breakdown_time + time_to_next_maintenance:
                     # 触发维护
                     shovel.repair = True
@@ -392,7 +395,7 @@ class Truck:
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
-                                                  "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
+                                                  "start_time": self.env.now, "est_end_time": self.env.now+(move_distance/self.truck_speed)*60,
                                                   "start_location": self.current_location.name,
                                                   "target_location": dest_unload_site.name, "speed": self.truck_speed,
                                                   "distance": move_distance, "order_index": dest_unload_index}))
@@ -509,9 +512,12 @@ class Truck:
         # 获取卡车的速度
         speed = self.truck_speed
         # 获取卡车的总共预期行驶时间
-        total_travel_time = (distance/speed)*60  # 单位：分钟
+        total_travel_time = (distance/speed)*60 + self.pre_jam_time + self.repair_time  # 单位：分钟
         # 获取卡车的路程覆盖率
         coverage = (current_time - self.journey_start_time)/total_travel_time
+        # TODO：道路检修事件转移到monitor中触发，从而维护一个更为精准的distance，从而获得更精准的coverage
+        if coverage > 1:
+            coverage = 1
         return coverage
 
     def sample_breakdown(self):

@@ -1,7 +1,8 @@
 from __future__ import annotations
 import numpy as np
+from matplotlib import pyplot as plt
 from scipy.stats import norm
-import random
+import random,math
 
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dump_site import DumpSite
@@ -66,60 +67,156 @@ class Road:
                 truck_list.append(truck)
         return truck_list
 
+    def plot_road_jam_events(self, jam_position, total_prob, current_time):
+        """
+        绘制当前堵车事件及其对应的概率密度函数
+        :param jam_position: 当前堵车事件的位置
+        :param total_prob: 当前的堵车概率分布
+        :param current_time: 当前时间，用于决定颜色的深浅
+        """
+        # 获取现有事件（在某个时刻已有的堵车事件）
+        events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
+
+        # 基于调度算法名称生成颜色
+        def generate_color(dispatcher_name):
+            """ 根据调度算法名称生成颜色 """
+            hash_value = hash(dispatcher_name)  # 使用hash函数生成整数
+            np.random.seed(hash_value % (2**32))  # 使用hash值作为随机数生成器的种子
+            color = np.random.rand(3, )  # 生成一个RGB颜色
+            return color
+
+        # 设置颜色渐变（随着时间的推移，颜色变淡）
+        plt.figure(figsize=(8, 6))
+
+        # 为每个事件根据调度算法生成颜色
+        for event in events:
+            dispatcher_name = self.mine.dispatcher.name
+            color = generate_color(dispatcher_name)  # 根据算法名字生成颜色
+            time_diff = current_time - event.info["start_time"]
+            # 使用时间差来设置颜色的透明度（越老的事件越透明）
+            alpha_value = max(0.1, 1 - time_diff / 100)  # 透明度范围 [0.1, 1]
+            plt.axvline(event.info["jam_position"], color=color, linestyle='--', alpha=alpha_value,
+                        label=f"{dispatcher_name} Jam at {event.info['jam_position']:.3f}")
+
+        # 绘制当前堵车的概率密度函数
+        plt.plot(np.linspace(0, 1, 1000), total_prob, color="green", label="Current Probability Density")
+
+        # 绘制最新的堵车位置，用三角形标记
+        plt.scatter(jam_position, total_prob[np.argmin(np.abs(np.linspace(0, 1, 1000) - jam_position))],
+                    color="red", marker='^', label=f"New Jam Position: {jam_position:.3f}")
+
+        plt.title("Road Jam Sampling with Event Visualization")
+        plt.xlabel("Position (x)")
+        plt.ylabel("Probability Density")
+
+        # 为每个调度算法添加图例
+        handles, labels = plt.gca().get_legend_handles_labels()
+        unique_labels = []
+        unique_handles = []
+        for handle, label in zip(handles, labels):
+            if label not in unique_labels:
+                unique_labels.append(label)
+                unique_handles.append(handle)
+        plt.legend(unique_handles, unique_labels)
+
+        plt.grid(True)
+        plt.show()
+
     def road_jam_sampling(self, start, end):
         """
         从start到end的道路上的堵车采样，将新事件放入mine的event-pool
         :param start: 开始地点对象
         :param end: 结束地点对象
-        :return:无
+        :return: 无
         """
-        # 从start到end的道路上的车辆列表
+        # ------------------------
+        # (0) 收集当前路段上的车辆
+        # ------------------------
         trucks_on_road = self.truck_on_road(start, end)
         if len(trucks_on_road) == 0:
             return
-        else:
-            pass
-        # 从start到end的道路长度
+
         distance = self.get_distance(trucks_on_road[0], end, enable_event=False)
-        # 为每个同路的车辆根据当前时间计算route_coverage数值
+
+        # 为每个同路的车辆根据当前时间计算 route_coverage 数值
         for truck in trucks_on_road:
             truck.journey_coverage = truck.get_route_coverage(distance)
-        # 假设每个车辆导致堵车的概率在route_coverage上满足正态分布，均值为route_coverage，方差为0.1
-        # other_trucks_on_road中的每个车导致堵车的概率会叠加在一起取平均成为最终的堵车概率分布
         truck_positions = [truck.journey_coverage for truck in trucks_on_road]
-        # 每个卡车的正态分布的标准差
-        sd = 0.1  # 根据3sigma原则，这个值代表这个车辆对堵车的影响会在+-0.3总路程的范围内
-        # 位置的范围
-        x = np.linspace(0, 1, 1000)
-        # 初始化堵车的概率为0
-        total_prob = np.zeros_like(x)
-        # 对每辆卡车
-        for i, position in enumerate(truck_positions):
-            # 计算在每个位置的堵车概率
-            prob = norm.pdf(x, position, sd)
-            # 将这个卡车的堵车概率加到总的堵车概率上
-            total_prob = total_prob + prob
-        # 正规化总的堵车概率
-        total_prob = total_prob / len(truck_positions)
-        # 使用蒙特卡洛方法来决定是否会发生堵车
-        if np.sum(total_prob) == 0:
-            probabilities = np.ones_like(total_prob) / len(total_prob)
-        else:
-            probabilities = total_prob / (np.sum(total_prob))
-        jam_position = np.random.choice(x, p=probabilities)
-        # 在jam_position处使用weibull分布，采样一个可能的堵车时间
-        jam_time = np.random.weibull(2) * 10
-        # 采样完成，放入pool
-        self.mine.random_event_pool.add_event(Event(self.env.now, "RoadEvent:jam",
-                                                    f'Time:<{self.env.now}> New RoadEvent:jam at road({jam_position}) from {start.name} '
-                                                    f'to {end.name} for {jam_time:.2f} minutes',
-                                                    info={"name": "RoadEvent:jam", "status": "jam", "speed": 0,
-                                                          "start_location": start.name,
-                                                          "end_location": end.name,
-                                                          "jam_position": jam_position,
-                                                          "start_time": self.env.now,
-                                                          "est_end_time": self.env.now + jam_time}))
 
+        # ------------------------
+        # (1) 先决定“要不要堵车”
+        # ------------------------
+
+        jam_lambda = 0.05  # 可自己调节大小(越大表示路上车辆对“触发堵车”的影响越显著)
+        N = len(trucks_on_road)
+        # 整体堵车概率: 车辆越多则越大
+        jam_chance = 1.0 - math.exp(-jam_lambda * N)
+
+        # 只做个输出提示；可保留可去
+        if len(trucks_on_road) > 2:
+            # print(f"Trucks on road from {start.name} to {end.name}: {len(trucks_on_road)}")
+            pass
+        elif len(trucks_on_road) == 1:
+            # print(f"Trucks on road from {start.name} to {end.name}: {len(trucks_on_road)}")
+            # 如果你仍想“单车就不堵”，可以直接 return
+            return
+
+        # 如果“这一次”没抽中堵车，直接退出
+        if random.random() >= jam_chance:
+            return
+
+        # ------------------------
+        # (2) 已判定要堵车 -> 再采样堵车位置
+        # ------------------------
+        sd = 0.1  # 每辆卡车生成的“影响分布”标准差
+
+        x = np.linspace(0, 1, 1000)
+        total_prob = np.zeros_like(x)
+
+        # 将各车的正态分布叠加
+        for position in truck_positions:
+            prob = norm.pdf(x, position, sd)
+            total_prob += prob
+
+        # 这里的 total_prob 只是用来选“拥堵发生位置”，所以先做归一化
+        total_prob_sum = np.sum(total_prob)
+        if total_prob_sum <= 1e-12:
+            return  # 极端情况下，直接不产生事件
+        total_prob /= total_prob_sum
+
+        # 再根据总分布选择具体位置
+        try:
+            jam_position_index = np.random.choice(np.arange(len(x)), p=total_prob)
+        except ValueError:
+            return
+        jam_position = x[jam_position_index]
+
+        # ------------------------
+        # (3) 真正生成一个新的堵车事件
+        # ------------------------
+        # 使用 Weibull 分布采样堵车时间
+        jam_time = np.random.weibull(2) * 10
+
+        # 可视化(若你不需要画图，删掉下面这行即可)
+        # self.plot_road_jam_events(jam_position, total_prob, self.env.now)
+
+        # 放入事件池
+        self.mine.random_event_pool.add_event(Event(
+            self.env.now,
+            "RoadEvent:jam",
+            f"Time:<{self.env.now}> New RoadEvent:jam at road({jam_position:.3f}) "
+            f"from {start.name} to {end.name} for {jam_time:.2f} minutes",
+            info={
+                "name": "RoadEvent:jam",
+                "status": "jam",
+                "speed": 0,
+                "start_location": start.name,
+                "end_location": end.name,
+                "jam_position": jam_position,
+                "start_time": self.env.now,
+                "est_end_time": self.env.now + jam_time,
+            },
+        ))
 
     def check_availability(self, current_site, target_site):
         """
