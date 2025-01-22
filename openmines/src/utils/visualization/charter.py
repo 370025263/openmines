@@ -158,66 +158,88 @@ class Charter:
 
     def draw_algo_based_fleet_ablation_experiment(self, scenes_data, baseline, target):
         """
-        Bilingual comment:
-        scenes_data 结构:
-          {
-            "sceneA": { "fleet_sizes": [...], "ratios": [...] },
-            "sceneB": { "fleet_sizes": [...], "ratios": [...] },
-            ...
-          }
-        baseline / target 用于标题或legend说明, 但实际我们只画 ratio = target/baseline.
+        本函数绘制“多场景 + 双算法”下的消融结果，但仅显示目标算法与基线算法的产量比 (ratio = target / baseline)，
+        每个场景一条折线。
 
-        English summary:
-        - For each scene, x-axis = fleet_sizes, y-axis = ratio (target / baseline).
-        - Each scenario => single line.
+        scenes_data 的结构示例:
+        {
+          "sceneA": { "fleet_sizes": [...], "ratios": [...] },
+          "sceneB": { "fleet_sizes": [...], "ratios": [...] },
+          ...
+        }
+        其中 ratio = target_production / baseline_production.
         """
+
         import matplotlib.pyplot as plt
         import numpy as np
+        from matplotlib.font_manager import FontProperties
 
+        # 使用与 draw 函数相同的 Times New Roman 字体与字号
+        times_new_roman = FontProperties(family='Times New Roman')
+
+        # 建议的画布尺寸，可以与 scene_ablation 类似
         fig, ax = plt.subplots(figsize=(5, 4))
 
+        # 使用 tab10 调色板给不同场景分配颜色
         color_map = plt.cm.get_cmap('tab10', len(scenes_data))
-        i = 0
 
+        # 用来收集全部 x（fleet_sizes）与 ratio，以便后续自动设置坐标范围
         all_fs = []
-        all_ratio = []
+        all_ratios = []
 
-        for scene_name, data in scenes_data.items():
+        # 遍历每个场景的数据
+        for i, (scene_name, data) in enumerate(scenes_data.items()):
             fsizes = data['fleet_sizes']
-            ratio = data['ratios']  # ratio array
+            ratio = data['ratios']
 
-            c = color_map(i)
-            i += 1
+            # 选择对应颜色
+            color_ = color_map(i)
 
-            # Plot one line for this scene
-            ax.plot(fsizes, ratio, marker='o', color=c, label=f"{scene_name}")
+            # 绘制该场景的折线
+            # marker='o'表示用小圆点, linewidth=0.7表示线宽
+            ax.plot(fsizes, ratio, marker='o', linewidth=0.7, color=color_, label=scene_name)
+
+            # 若需要标记最高点/最低点，则如下:
             arr_r = np.array(ratio)
-            if len(arr_r) > 0:
+            if arr_r.size > 0:
                 rmax_i = arr_r.argmax()
                 rmin_i = arr_r.argmin()
-                # Mark the highest/lowest points as black dots
+                # 在最高点和最低点画实心黑色圆点
                 ax.plot(fsizes[rmax_i], ratio[rmax_i], 'ko', mfc='black')
                 ax.plot(fsizes[rmin_i], ratio[rmin_i], 'ko', mfc='black')
 
-            all_fs += fsizes
-            all_ratio += ratio
+            # 收集数据用于设置坐标范围
+            all_fs.extend(fsizes)
+            all_ratios.extend(ratio)
 
-        # Adjust x,y-limits
+        # 自动设定 x、y 的范围，防止图像过于稀疏或挤压
         if all_fs:
             fs_min, fs_max = min(all_fs), max(all_fs)
-            r_min, r_max = min(all_ratio), max(all_ratio)
+            r_min, r_max = min(all_ratios), max(all_ratios)
             margin_x = 0.05 * (fs_max - fs_min) if fs_max > fs_min else 1
             margin_y = 0.05 * (r_max - r_min) if r_max > r_min else 0.1
+
             ax.set_xlim(fs_min - margin_x, fs_max + margin_x)
+            # 若 r_max <= 0 则设置一个默认值，防止 y 轴范围为负或 0
             ax.set_ylim(r_min - margin_y, r_max + margin_y if r_max > 0 else 0.1)
 
-        # Label
-        ax.set_xlabel("Fleet Size", fontsize=10, fontweight='bold')
-        ax.set_ylabel("Production Ratio (target / baseline)", fontsize=10, fontweight='bold')
-        ax.set_title(f"Ablation: {baseline} vs {target}", fontsize=12, fontweight='bold')
-        ax.legend(fontsize=8, loc='best')
+        # 设置坐标轴刻度的字体大小（与 draw 函数一致）
+        ax.tick_params(axis='both', which='major', labelsize=6)
 
+        # 图例设置：字号可与 draw 函数保持一致
+        ax.legend(prop={'size': 5}, loc='best')
+
+        # 设置坐标轴标签，采用 Times New Roman 字体
+        ax.set_xlabel("Fleet Size", fontproperties=times_new_roman, fontsize=8)
+        ax.set_ylabel("Production Ratio (Target / Baseline)", fontproperties=times_new_roman, fontsize=8)
+
+        # 不再设置标题，直接移除 ax.set_title(...)，也不使用 fig.text。
+        # 如果想简单放一行文字，可以手动调用 fig.text(...)，否则就完全省去。
+        ax.set_title("Algorithm-based Fleet Ablation", fontproperties=times_new_roman, fontsize=10)
+        # 布局紧凑
         plt.tight_layout()
+
+        # 将绘制的 Figure 存入 self.fig_img
         self.fig_img = fig
 
     def save_ablation(self, tag="ablation"):
