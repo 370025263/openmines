@@ -248,18 +248,14 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
     """
     多场景+双算法消融实验 (algo-based ablation).
     Bilingual comment:
-    1) 读取 config_dir 中的多个场景 (多个JSON文件).
-    2) 对每个场景, 在 [min_truck, max_truck] 之间等分若干个点, 改变卡车总数.
-    3) 分别运行 baseline 和 target 算法, 得到产量; 计算 ratio= target_produced / baseline_produced.
-    4) 最终 scenes_data 中, 每个场景只有一条线: x= fleet_size, y= ratio(target/baseline).
-    5) 让 Charter 的 draw_algo_based_fleet_ablation_experiment() 来画出这(3个)场景的(3条)对比线.
-
+    1) 遍历 config_dir 中场景文件。对每个场景，在[min_truck, max_truck]之间等分若干车队规模点。
+    2) 分别跑 baseline、target，得到产量并计算 ratio = target / baseline。
+    3) 每个场景 -> 一条线 (x=车队规模, y=ratio)。
     English summary:
-    - For each scenario file in config_dir, vary the total truck count from min_truck to max_truck.
-    - Run baseline & target, get produced tons. Then ratio = target / baseline.
-    - We'll plot one line per scenario: x= fleet size, y= ratio.
+    - For each scenario file in config_dir, vary total trucks from min_truck to max_truck.
+    - Run baseline & target, get produced tons, ratio = target / baseline.
+    - We plot exactly one line per scenario: x=fleet size, y=ratio.
     """
-
     import os, math, copy
     from openmines.src.utils.visualization.charter import Charter
     import pathlib
@@ -275,7 +271,6 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
         print(f"No json in {config_dir}. skip.")
         return
 
-    # Build the set of fleet sizes
     minT = int(min_truck)
     maxT = int(max_truck)
     if maxT < minT:
@@ -287,7 +282,7 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
         step = (maxT - minT) / 9
         fleet_sizes = [int(math.floor(minT + i * step)) for i in range(10)]
 
-    # Find dispatcher classes
+    # find dispatcher classes
     dispatchers_package = 'openmines.src.dispatch_algorithms'
     dispatchers_module = importlib.import_module(dispatchers_package)
 
@@ -304,39 +299,34 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
         print(f"[algo_ablation] cannot find baseline={baseline} or target={target}.")
         return
 
-    # We'll collect results in scenes_data, each scenario => { 'fleet_sizes': [...], 'ratios': [...] }
+    # Collect each scenario => { 'fleet_sizes': [...], 'ratios': [...] }
     scenes_data = {}
 
-    # Iterate each scenario file
     for cfg_path in file_list:
         scene_name = cfg_path.stem
         conf = load_config(cfg_path)
-
-        # Original total trucks & ratio
         truck_info = conf["charging_site"]["trucks"]
         orig_counts = [t_["count"] for t_ in truck_info]
         total_orig = sum(orig_counts)
-        ratios = [c / total_orig for c in orig_counts]
+        ratios_arr = [c / total_orig for c in orig_counts]
 
-        # scene_data: each scenario has 'fleet_sizes' and 'ratios'
         sc_data = {
             'fleet_sizes': [],
             'ratios': []
         }
 
-        # For each fleet size, build config and run baseline/target
         for fs in fleet_sizes:
             new_conf = copy.deepcopy(conf)
             assigned = 0
             for i, t_ in enumerate(new_conf["charging_site"]["trucks"]):
-                new_ct = int(math.floor(fs * ratios[i]))
+                new_ct = int(math.floor(fs * ratios_arr[i]))
                 assigned += new_ct
                 t_["count"] = new_ct
             leftover = fs - assigned
             if leftover > 0:
                 new_conf["charging_site"]["trucks"][-1]["count"] += leftover
 
-            # Run baseline
+            # baseline
             b_obj = baseline_class()
             b_ticks = run_dispatch_sim(b_obj, new_conf)
             produced_b = 0.0
@@ -344,7 +334,7 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
                 if 'mine_states' in td:
                     produced_b = td['mine_states']['produced_tons']
 
-            # Run target
+            # target
             t_obj = target_class()
             t_ticks = run_dispatch_sim(t_obj, new_conf)
             produced_t = 0.0
@@ -352,21 +342,17 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
                 if 'mine_states' in td:
                     produced_t = td['mine_states']['produced_tons']
 
-            # Compute ratio = target / baseline (if baseline>0)
-            ratio = 0.0
+            ratio_val = 0.0
             if produced_b > 1e-9:
-                ratio = produced_t / produced_b
+                ratio_val = produced_t / produced_b
 
             sc_data['fleet_sizes'].append(fs)
-            sc_data['ratios'].append(ratio)
+            sc_data['ratios'].append(ratio_val)
 
         scenes_data[scene_name] = sc_data
 
-    # Pass to Charter
     c = Charter(str(config_dir))
-    # We'll reuse the same function name but implement ratio lines
     c.draw_algo_based_fleet_ablation_experiment(scenes_data, baseline, target)
-    # Then we save
     c.save_ablation(tag="algo_ablation")
 
 def main():
