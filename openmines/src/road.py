@@ -57,12 +57,11 @@ class Road:
         :param end:
         :return:
         """
-        if self.env.now < 2:
-            return []
-
         # 从start到end的道路上的车辆列表
         truck_list = []
         for truck in self.mine.trucks:
+            if truck.current_location is None or truck.target_location is None:
+                continue
             if truck.current_location.name == start.name and truck.target_location.name == end.name and truck.status == "moving":
                 truck_list.append(truck)
         return truck_list
@@ -134,6 +133,8 @@ class Road:
         # ------------------------
         trucks_on_road = self.truck_on_road(start, end)
         if len(trucks_on_road) == 0:
+            return
+        if self.env.now < 2:
             return
 
         distance = self.get_distance(trucks_on_road[0], end, enable_event=False)

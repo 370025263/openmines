@@ -300,6 +300,7 @@ class Truck:
             dest_load_index: int = yield self.env.process(self.wait_for_decision())
         else:
             dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
+        self.status = "moving"
         self.first_order_time = self.env.now
         self.target_location = self.mine.load_sites[dest_load_index]
         self.mine.update_road_status()  # manually update road status, since the monitor didn't start yet

@@ -18,15 +18,17 @@ class ShortestTripDispatcher(BaseDispatcher):
         reach_load_time = now_time + 60*np.array(charging_to_load) / avg_velocity
 
         # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
-        load_available_time = now_time + np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites])
+        trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
+        load_time_on_road_trucks = [sum([each_truck.truck_capacity for each_truck in each_road])/mine.load_sites[i].load_site_productivity for i,each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+        load_available_time = now_time + np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)  # 装载点的预期服务时间， 包含了路上的卡车和正在排队的卡车
         service_available_time = np.maximum(load_available_time, reach_load_time)
 
         # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
         assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
-        loading_time = np.array([truck.truck_load/ (load_site.load_site_productivity/len(load_site.shovel_list)) for load_site in mine.load_sites])  # mins
-        target = np.argmin(service_available_time + loading_time - now_time)
+        loading_service_time = np.array([truck.truck_capacity/ (load_site.load_site_productivity/len(load_site.shovel_list)) for load_site in mine.load_sites])  # mins
+        avl = np.argmin(service_available_time + loading_service_time - now_time)
 
-        return target
+        return avl
 
     def give_haul_order(self, truck: "Truck", mine: "Mine") -> int:
         current_location = truck.current_location
@@ -41,8 +43,10 @@ class ShortestTripDispatcher(BaseDispatcher):
         # 计算车辆抵达各卸载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
         reach_dump_time = now_time + 60*cur_to_dump / avg_velocity
 
+        trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.dump_sites[i]) for i in range(len(mine.dump_sites))]
+        dump_time_on_road_trucks = [(sum([1 for each_truck in each_road]) / len(mine.dump_sites[i].dumper_list) )*mine.dump_sites[i].dumper_list[0].dump_time for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
         # 计算车辆在各卸载点预期获得服务时间(dump_available_time 为各卸载点处上一次卸载的完成时间:np.array)
-        dump_available_time = now_time + np.array([dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites])
+        dump_available_time = now_time + np.array([dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) + np.array(dump_time_on_road_trucks)
         service_available_time = np.maximum(dump_available_time, reach_dump_time)
 
         # 计算车辆驶往各卸载点, 并最终完成卸载的预期任务完成时间, 并取最小值 (loading_time 为各挖机卸载时间:np.array)
@@ -64,14 +68,16 @@ class ShortestTripDispatcher(BaseDispatcher):
         # 计算车辆抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
         reach_load_time = now_time + 60*cur_to_load / avg_velocity
 
+        trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
+        load_time_on_road_trucks = [sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
         # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
-        load_available_time = now_time + np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites])
+        load_available_time = now_time + np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)
         service_available_time = np.maximum(load_available_time, reach_load_time)
 
         # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
         assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
         loading_time = np.array(
-            [truck.truck_load / (load_site.load_site_productivity / len(load_site.shovel_list)) for load_site in
+            [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for load_site in
              mine.load_sites])  # mins
         target = np.argmin(service_available_time + loading_time - now_time)
 
