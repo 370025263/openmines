@@ -7,6 +7,7 @@ from asyncore import dispatcher
 from queue import Empty, Full
 from multiprocessing import Queue, Lock
 
+import numpy as np
 from docutils.nodes import target
 
 from openmines.src.charging_site import ChargingSite
@@ -150,25 +151,118 @@ class RLDispatcher(BaseDispatcher):
         :param mine:
         :return:
         """
+        """
+        最终reward = MF匹配度reward(final) + 中间选择倾向度reward
+        """
+        reward = 0
+        trip_reward = 0
+        if dense:
+            if isinstance(truck.current_location, ChargingSite):
+                charging_to_load: list[float] = mine.road.charging_to_load  # 从备停区到各装载点的距禽(千米)
+                avg_velocity: float = truck.truck_speed  # 车辆平均配速(千米/小时)
+                now_time = mine.env.now  # 当前仿真时间(min). Actually, this is just 0.0 because it's init order which launches at the beginning of the simulation
 
-        # # funcs
-        # productivity_reward_func = lambda x : -8*x**2/3 + 14*x/3 - 1  # (0,-1) (0.25,0) (1,1)
-        # distance_reward_func = lambda x : -15*x**2/4 + 7*x/4 + 1  # (0,1) (0.8,0) (1,-1)
-        # traffic_reward_func = lambda x : 1/4 - 25*x**2/64 if x < 0.8 else -25*x**2 + 40*x - 16
-        # # weight
-        # static_weight = [0.33,0.33,0.33]
-        # if action is None and truck is None:
-        #     # THIS IS LAST STEP, return total reward
-        #     baseline_production = 15000
-        #     reward:int = (self.last_production - baseline_production)/1000
-        #     match_factor = mine.match_factor
-        #     # if match_factor is inf
-        #     if match_factor == float("inf"):
-        #         raise Exception("Match factor is inf at end")
-        #     match_factor_r = match_factor if match_factor > 1 else match_factor - 1
-        #     # print("MatchFactor:",match_factor)
-        #     reward += match_factor_r*10
-        #     return reward
+                # 计算车辆(从备停区)抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:np.array. 1D Float)
+                reach_load_time = now_time + 60 * np.array(charging_to_load) / avg_velocity
+
+                # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
+                trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
+                                   range(len(mine.load_sites))]
+                load_time_on_road_trucks = [
+                    sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
+                        i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+                load_available_time = now_time + np.array(
+                    [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
+                    load_time_on_road_trucks)  # 装载点的预期服务时间， 包含了路上的卡车和正在排队的卡车
+                service_available_time = np.maximum(load_available_time, reach_load_time)
+
+                # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
+                assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
+                loading_service_time = np.array(
+                    [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
+                     load_site in mine.load_sites])  # mins
+                trip_times =(service_available_time + loading_service_time - now_time)
+                trip_rewards = np.exp(-0.1*trip_times) - 0.5
+            # HAUL PHASE REWARD
+            elif isinstance(truck.current_location, LoadSite):
+                current_location = truck.current_location
+                assert current_location.__class__.__name__ == "LoadSite", "current_location is not a LoadSite"
+                avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
+                now_time = mine.env.now  # 当前仿真时间(min)
+                cur_index = mine.load_sites.index(current_location)  # 获取当前位置的index
+
+                # 获取当前位置到所有dump site的距离
+                cur_to_dump: np.array = mine.road.road_matrix[cur_index, :]
+
+                # 计算车辆抵达各卸载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
+                reach_dump_time = now_time + 60 * cur_to_dump / avg_velocity
+
+                trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.dump_sites[i]) for i
+                                   in range(len(mine.dump_sites))]
+                dump_time_on_road_trucks = [
+                    (sum([1 for each_truck in each_road]) / len(mine.dump_sites[i].dumper_list)) *
+                    mine.dump_sites[i].dumper_list[0].dump_time for i, each_road in
+                    enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+                # 计算车辆在各卸载点预期获得服务时间(dump_available_time 为各卸载点处上一次卸载的完成时间:np.array)
+                dump_available_time = now_time + np.array(
+                    [dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) + np.array(
+                    dump_time_on_road_trucks)
+                service_available_time = np.maximum(dump_available_time, reach_dump_time)
+                # 计算车辆驶往各卸载点, 并最终完成卸载的预期任务完成时间, 并取最小值 (loading_time 为各挖机卸载时间:np.array)
+                unloading_time = np.array([dump_site.dumper_list[0].dump_time for dump_site in mine.dump_sites])
+                trip_times =(service_available_time + unloading_time - now_time)
+                trip_rewards = np.exp(-0.1*trip_times) - 0.5
+
+            # UNHAUL PHASE REWARD
+            elif isinstance(truck.current_location, DumpSite):
+                current_location = truck.current_location
+                assert current_location.__class__.__name__ == "DumpSite", "current_location is not a DumpSite"
+                avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
+                now_time = mine.env.now
+                cur_index = mine.dump_sites.index(current_location)
+
+                # 获取当前位置到所有装载点的距离
+                cur_to_load = mine.road.road_matrix[:, cur_index]
+
+                # 计算车辆抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
+                reach_load_time = now_time + 60 * cur_to_load / avg_velocity
+
+                trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
+                                   range(len(mine.load_sites))]
+                load_time_on_road_trucks = [
+                    sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
+                        i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+                # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
+                load_available_time = now_time + np.array(
+                    [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
+                    load_time_on_road_trucks)
+                service_available_time = np.maximum(load_available_time, reach_load_time)
+
+                # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
+                assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
+                loading_time = np.array(
+                    [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
+                     load_site in
+                     mine.load_sites])  # mins
+                trip_times =(service_available_time + loading_time - now_time)
+                trip_rewards = np.exp(-0.1*trip_times) - 0.5
+            else:
+                raise Exception(f"Truck {truck.name} at {truck.current_location.name} order is unkown: {action}")
+
+            trip_reward = trip_rewards[action]
+
+        if action is None and truck is None:
+            # THIS IS LAST STEP, return total reward
+            baseline_production = 12000
+            reward += (self.last_production - baseline_production)/1000
+            # reward += self.last_production/1000
+            match_factor = mine.match_factor
+            # if match_factor is inf
+            if match_factor == float("inf"):
+                raise Exception("Match factor is inf at end")
+            print("FIN-MatchFactor:", match_factor)
+            reward += (match_factor-0.5)*1000
+
         # # INIT PHASE REWARD
         # if isinstance(truck.current_location, ChargingSite):
         #     load_site_productivities = normalize_list_inplace([load_site.load_site_productivity for load_site in mine.load_sites])
@@ -193,9 +287,9 @@ class RLDispatcher(BaseDispatcher):
         #
         # # reward += 1
         # # POTENTIAL REWARD SHAPING
-        # cur_production = mine.produce_tons
-        # # reward = cur_production - self.last_production
-        # self.last_production = cur_production
+        cur_production = mine.produce_tons
+        # reward = (cur_production - self.last_production)/1000 if (cur_production - self.last_production)>0 else -1
+        self.last_production = cur_production
         # if dense:
         #     # use group dispatch reward
         #     dispatch = FixedGroupDispatcher()
@@ -209,7 +303,8 @@ class RLDispatcher(BaseDispatcher):
         #     # if action == decision, give bonus
         #     # reward = reward + 0.1 if action == decision else reward - 0.1  # just supervise
         # return reward
-        return 1
+        reward += trip_reward
+        return reward
 
     def _get_observation(self, truck: Truck, mine: Mine):
         """

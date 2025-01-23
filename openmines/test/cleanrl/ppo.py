@@ -12,7 +12,6 @@ import torch.nn as nn
 import torch.optim as optim
 import tyro
 from torch.distributions.categorical import Categorical
-from torch.fx.experimental.symbolic_shapes import parallel_and
 from torch.utils.tensorboard import SummaryWriter
 
 import openmines_gym
@@ -47,7 +46,7 @@ class Args:
     """total timesteps of the experiments"""
     learning_rate: float = 2.5e-4
     """the learning rate of the optimizer"""
-    num_envs: int = 2  # 4
+    num_envs: int = 50  # 4
     """the number of parallel game environments"""
     num_steps: int = 700  # 128
     """the number of steps to run in each environment per policy rollout"""
@@ -75,6 +74,7 @@ class Args:
     """the maximum norm for the gradient clipping"""
     target_kl: float = None
     """the target KL divergence threshold"""
+
     # 添加检查点相关参数
     checkpoint_dir: str = "checkpoints"
     """检查点保存目录"""
@@ -86,11 +86,18 @@ class Args:
     """加载特定检查点的路径"""
     save_best_only: bool = False
     """是否只保存最佳模型"""
-    # 添加指导损失相关参数
+
+    # 添加指导损失相关参数（原有的线性衰减参数仍保留，但不再使用）
     guide_initial_value: float = 0.1
     guide_final_value: float = 0.0
     guide_start_decay_step: int = 3_000_000
     guide_decay_steps: int = 500_000
+
+    # ====== 新增的产量阈值 + 教师权重因子 ======
+    teacher_acceptable_tons: float = 13000
+    """当 produce_tons >= 这个数值，视为模型已足够好，可将教师loss系数置 0"""
+    teacher_alpha: float = 0.1
+    """当未达标时，教师系数使用 alpha * (1 - c_teacher)"""
 
     # to be filled in runtime
     batch_size: int = 0
@@ -100,13 +107,14 @@ class Args:
     num_iterations: int = 0
     """the number of iterations (computed in runtime)"""
 
+
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
         if capture_video and idx == 0:
-            env = gym.make(env_id, config_file =args.mine_config, render_mode="rgb_array")
+            env = gym.make(env_id, config_file=args.mine_config, render_mode="rgb_array")
             env = gym.wrappers.RecordVideo(env, f"videos/{run_name}")
         else:
-            env = gym.make(env_id, config_file =args.mine_config)
+            env = gym.make(env_id, config_file=args.mine_config)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
 
@@ -121,7 +129,6 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 class Agent(nn.Module):
     def __init__(self, envs):
-        super().__init__()
         super().__init__()
         # 提取环境信息
         self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__()
@@ -172,8 +179,9 @@ class Agent(nn.Module):
 
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x), probs.log_prob(
-            sug_action) if sug_action is not None else None
+        return action, probs.log_prob(action), probs.entropy(), self.critic(x), (
+            probs.log_prob(sug_action) if sug_action is not None else None
+        )
 
     @property
     def device(self):
@@ -189,7 +197,7 @@ class Agent(nn.Module):
         self.load_state_dict(torch.load(path, map_location=self.device))
 
 
-# 首先添加衰减器类
+# 保留原有的 GuidanceDecay 类，但不再在训练中实际调用
 class GuidanceDecay:
     """指导系数衰减器
         coef
@@ -214,15 +222,13 @@ class GuidanceDecay:
         self.decay_steps = decay_steps
 
     def get_value(self, global_step: int) -> float:
-        """获取当前步骤的指导系数"""
+        """获取当前步骤的指导系数 (线性衰减示例)"""
         if global_step < self.start_decay_step:
             return self.initial_value
 
-        # 如果超过衰减结束步数，返回最终值
         if global_step >= self.start_decay_step + self.decay_steps:
             return self.final_value
 
-        # 线性衰减
         decay_progress = (global_step - self.start_decay_step) / self.decay_steps
         return self.initial_value + (self.final_value - self.initial_value) * decay_progress
 
@@ -268,9 +274,7 @@ class CheckpointManager:
             torch.save(checkpoint, best_path)
             print(f"New best model saved with reward: {reward:.2f}")
 
-        # 清理旧检查点
         self._cleanup_old_checkpoints()
-
         return checkpoint_path
 
     def load_checkpoint(self,
@@ -314,6 +318,7 @@ class CheckpointManager:
         ]
         checkpoints = [os.path.join(self.checkpoint_dir, f) for f in checkpoints]
         return sorted(checkpoints)
+
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
@@ -359,7 +364,7 @@ if __name__ == "__main__":
     # 创建检查点管理器
     checkpoint_manager = CheckpointManager(args, run_name)
 
-    # 创建指导系数衰减器(DIRECT POLICY GUIDANCE)
+    # 原先的指南衰减器类依然保留，但不做实际调用
     guide_decay = GuidanceDecay(
         initial_value=args.guide_initial_value,
         final_value=args.guide_final_value,
@@ -369,13 +374,13 @@ if __name__ == "__main__":
 
     # 加载检查点(如果指定)
     start_iteration = 0
+    best_reward = float('-inf')
     if args.checkpoint_path:
         start_iteration, best_reward = checkpoint_manager.load_checkpoint(
             agent, optimizer, args.checkpoint_path
         )
 
     # ALGO Logic: Storage setup
-    # 使用预处理后的观察空间维度
     obs_shape = agent.obs_shape
     obs = torch.zeros((args.num_steps, args.num_envs, obs_shape)).to(device)
     actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
@@ -385,11 +390,12 @@ if __name__ == "__main__":
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
-    # TRY NOT TO MODIFY: start the game
+    # 记录全局步数 & 产量
     global_step = 0
     start_time = time.time()
+    latest_produce_tons = 0.0  # 新增：用于存储最近一次episode结束时的产量
+
     next_obs, infos = envs.reset(seed=args.seed)
-    #next_obs = torch.Tensor(next_obs).to(device)
     next_obs = torch.FloatTensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
@@ -399,6 +405,7 @@ if __name__ == "__main__":
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
+
         # 保存检查点
         if iteration % args.save_interval == 0:
             is_best = False
@@ -424,28 +431,23 @@ if __name__ == "__main__":
             obs[step] = next_obs
             dones[step] = next_done
 
-
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 current_sug_action = torch.tensor(infos.get("sug_action", [-1] * args.num_envs)).to(device)
                 action, logprob, _, value, _ = agent.get_action_and_value(next_obs, sug_action=current_sug_action)
                 values[step] = value.flatten()
+
             actions[step] = action
             logprobs[step] = logprob
-            # print('current_sug_action:', current_sug_action, current_sug_action.shape, sug_actions[step].shape)
             sug_actions[step] = current_sug_action
 
-            # TRY NOT TO MODIFY: execute the game and log data.
             next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             next_done = np.logical_or(terminations, truncations)
             rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs, next_done = torch.Tensor(next_obs).to(device), torch.Tensor(next_done).to(device)
+            next_obs = torch.FloatTensor(next_obs).to(device)
+            next_done = torch.FloatTensor(next_done).to(device)
 
-            # CUSTOM LOGIC: sug_action as label to create a loss
-            #sug_actions = torch.tensor(infos["sug_action"]).to(device)
-
-            if infos.keys() and "final_info" in infos:
-                pass
+            # 如果episode结束，记录产量
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
@@ -453,13 +455,13 @@ if __name__ == "__main__":
                         if isinstance(produce_tons, (float, int)):
                             avg_tons = produce_tons
                         else:
-                            # 如果是列表或其他可迭代对象，则计算平均值
                             avg_tons = sum(produce_tons) / len(produce_tons)
 
+                        latest_produce_tons = avg_tons  # 记录产量
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}",
                               f"episodic_length={info['episode']['l']}, produce_tons={avg_tons}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
-                        writer.add_scalar("charts/episodic_letstrap value if not donength", info["episode"]["l"], global_step)
+                        writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         writer.add_scalar("charts/produce_tons", avg_tons, global_step)
 
         # bootstrap value if not done
@@ -482,7 +484,7 @@ if __name__ == "__main__":
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
-        b_sug_actions = sug_actions.reshape((-1,) + envs.single_action_space.shape) # 在优化阶段添加指导损失
+        b_sug_actions = sug_actions.reshape((-1,) + envs.single_action_space.shape)
         b_advantages = advantages.reshape(-1)
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
@@ -490,18 +492,23 @@ if __name__ == "__main__":
         # Optimizing the policy and value network
         b_inds = np.arange(args.batch_size)
         clipfracs = []
+
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue, sug_logprob = agent.get_action_and_value(b_obs[mb_inds], b_actions.long()[mb_inds],b_sug_actions.long()[mb_inds])
+                _, newlogprob, entropy, newvalue, sug_logprob = agent.get_action_and_value(
+                    b_obs[mb_inds],
+                    b_actions.long()[mb_inds],
+                    b_sug_actions.long()[mb_inds]
+                )
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    # calculate approx_kl http://joschu.net/blog/kl-approx.html
+                    # KL metrics
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
@@ -531,12 +538,35 @@ if __name__ == "__main__":
                     v_loss = 0.5 * ((newvalue - b_returns[mb_inds]) ** 2).mean()
 
                 entropy_loss = entropy.mean()
-                # Sug-action loss: KL divergence between sug_action and action
-                # 添加指导损失
-                guide_coef = guide_decay.get_value(global_step)  # 指导损失的权重系数
-                valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()  # 处理无效的建议动作
-                guide_loss = -(sug_logprob * valid_sug_mask).mean()
 
+                # ========== 自适应教师指导系数的核心修改部分 ==========
+                valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()
+                with torch.no_grad():
+                    if sug_logprob is not None:
+                        # 计算 c_teacher: 在本 mini-batch 上对教师动作的平均概率
+                        probs = torch.exp(sug_logprob) * valid_sug_mask
+                        sum_probs = probs.sum()
+                        valid_count = valid_sug_mask.sum()
+                        if valid_count > 0:
+                            c_teacher = (sum_probs / valid_count).item()
+                        else:
+                            c_teacher = 0.0
+                    else:
+                        c_teacher = 0.0
+
+                # 根据产量阈值 & c_teacher 确定最终 guide_coef
+                if latest_produce_tons >= args.teacher_acceptable_tons:
+                    guide_coef = 0.0
+                else:
+                    guide_coef = args.teacher_alpha * (1.0 - c_teacher)
+
+                # 计算指导损失
+                if sug_logprob is not None:
+                    guide_loss = -(sug_logprob * valid_sug_mask).mean()
+                else:
+                    guide_loss = 0.0
+
+                # 合并到总loss
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef + guide_coef * guide_loss
 
                 optimizer.zero_grad()
@@ -560,7 +590,14 @@ if __name__ == "__main__":
         writer.add_scalar("losses/approx_kl", approx_kl.item(), global_step)
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
-        writer.add_scalar("losses/guide_loss", guide_loss.item(), global_step)
+
+        # 记录 guide_loss 和 guide_coef 方便观察
+        if isinstance(guide_loss, torch.Tensor):
+            writer.add_scalar("losses/guide_loss", guide_loss.item(), global_step)
+        else:
+            writer.add_scalar("losses/guide_loss", 0.0, global_step)
+        writer.add_scalar("charts/guide_coef", guide_coef, global_step)
+
         print("SPS:", int(global_step / (time.time() - start_time)))
         writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
 
