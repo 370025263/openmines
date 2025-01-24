@@ -30,10 +30,10 @@ def preprocess_observation(observation):
         dis_mask = [0]*10 + [1]*5
         site_mask = [1]*5 + [0]*5
     # travel time = dis_mask * distances / 25
-    travel_time = np.array(observation['cur_road_status']['distances']) / 25
+    travel_time = np.array(observation['cur_road_status']['distances'])*60 / 25
 
     # est_wait
-    est_wait = np.array(observation['target_status']['single_est_wait'])
+    est_wait = observation['target_status']['single_est_wait'] # np.array already
 
     # location
     truck_location_onehot = np.array(observation["the_truck_status"]["truck_location_onehot"])
@@ -381,23 +381,23 @@ if __name__ == "__main__":
             break
     env.close()
 
-    """Multiprocessing Mine"""
-    # 创建环境
-    env = GymMineEnv("../../../../conf/north_pit_mine.json", log=False, ticks=False)
-    # 添加一些常用的包装器
-    env = gym.wrappers.RecordEpisodeStatistics(env)  # 记录episode统计
-    # 使用环境
-    observation, info = env.reset(seed=42)
-    for i in range(2000):
-        action = env.action_space.sample()  # 随机动作
-        print(f"A_{i} Action: {action}")
-        observation, reward, terminated, truncated, info = env.step(action)
-        if i % 70 == 0 and i !=0:
-            pass
-        print(f"Step: {i}, Reward: {reward}, Info: {info} terminated: {terminated}, truncated: {truncated}")
-
-        if terminated or truncated:
-            observation, info = env.reset()
-            break
-
-    env.close()
+    # """Multiprocessing Mine"""
+    # # 创建环境
+    # env = GymMineEnv("../../../../conf/north_pit_mine.json", log=False, ticks=False)
+    # # 添加一些常用的包装器
+    # env = gym.wrappers.RecordEpisodeStatistics(env)  # 记录episode统计
+    # # 使用环境
+    # observation, info = env.reset(seed=42)
+    # for i in range(2000):
+    #     action = env.action_space.sample()  # 随机动作
+    #     print(f"A_{i} Action: {action}")
+    #     observation, reward, terminated, truncated, info = env.step(action)
+    #     if i % 70 == 0 and i !=0:
+    #         pass
+    #     print(f"Step: {i}, Reward: {reward}, Info: {info} terminated: {terminated}, truncated: {truncated}")
+    #
+    #     if terminated or truncated:
+    #         observation, info = env.reset()
+    #         break
+    #
+    # env.close()

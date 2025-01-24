@@ -329,13 +329,19 @@ class RLDispatcher(BaseDispatcher):
         # 目标地点状态
         if isinstance(truck.current_location, DumpSite):  # and isinstance(truck.target_location, LoadSite):
             event_name = "unhaul"
-            sig_wait_est =  [load_site.estimated_queue_wait_time for load_site in mine.load_sites]
+            trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
+            load_time_on_road_trucks = [sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+            sig_wait_est =  np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)
         elif isinstance(truck.current_location, ChargingSite):
             event_name = "init"
-            sig_wait_est = [load_site.estimated_queue_wait_time for load_site in mine.load_sites]
+            trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
+            load_time_on_road_trucks = [sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+            sig_wait_est = np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)
         else:
             event_name = "haul"
-            sig_wait_est = [dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]
+            trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.dump_sites[i]) for i in range(len(mine.dump_sites))]
+            dump_time_on_road_trucks = [(sum([1 for each_truck in each_road]) / len(mine.dump_sites[i].dumper_list) )*mine.dump_sites[i].dumper_list[0].dump_time for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+            sig_wait_est = np.array([dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) + np.array(dump_time_on_road_trucks)
         target_status = {
             # stats and digits
             "queue_lengths": [load_site.parking_lot.queue_status["total"]["cur_value"] for load_site in
@@ -368,6 +374,7 @@ class RLDispatcher(BaseDispatcher):
             load_site_name = mine.load_sites[i].name
             cur_road_status["charging2load"]["truck_count"][i] = mine.road.road_status[(charging_site_name, load_site_name)][
                 "truck_count"]
+            assert cur_road_status["charging2load"]["truck_count"][i] == len(mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i])), f"Truck count is not match: {cur_road_status['charging2load']['truck_count'][i]} vs {mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i])}"
             cur_road_status["charging2load"]["truck_jam_count"][i] = mine.road.road_status[(charging_site_name, load_site_name)][
                 "truck_jam_count"]
             cur_road_status["charging2load"]["repair_count"][i] = mine.road.road_status[(charging_site_name, load_site_name)][
