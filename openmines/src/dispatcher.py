@@ -62,7 +62,7 @@ class BaseDispatcher:
 
             # update mine queue&wait info before the order starts
             # 使用mine对象更新环境信息
-            #self.update_mine(mine)
+            self.update_mine(mine)
 
             # 记录time,calls of dispatcher
             start_time = time.time()

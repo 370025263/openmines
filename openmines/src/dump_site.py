@@ -44,6 +44,7 @@ class DumpSite:
         self.status = dict()  # the status of shovel
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
+        self.service_ability_ratio = 1  # the ability of dump site to serve trucks(0-1), the dumper may be breakdown
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
         self.avg_queue_wait_time = 0  # the average waiting time for coming trucks in queue
         self.dump_site_productivity = 0

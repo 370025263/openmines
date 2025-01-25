@@ -36,20 +36,24 @@ class RLDispatcher(BaseDispatcher):
         self.last_production = 0
         self.last_time = 0
         self.last_reward = 0
+        self.last_order_time = 0
+        self.last_truck = None
+        self.last_action = None
 
     def _step(self, truck: Truck, mine: Mine) -> int:
         """完成队列交互"""
         start_time = time.time()
         timeout = 30  # 设置总超时时间为10秒
         try:
-            # 断点 1: 获取观察值之前
+            # 1: 获取观察值
             self.current_observation = self._get_observation(truck, mine)
             info = self.current_observation["info"]
-            reward = self.last_reward
+            #reward = self.last_reward  # 读取上一次的reward并进行计算
+            reward = self._get_reward(mine=mine, truck=self.last_truck, action=self.last_action, dense=True)  # 预估当前决策的奖励，下一步作为reward返回
             done = self._get_done(mine)
             truncated = False
             # suggest action
-            info["sug_action"] = self._get_dispatch_action(truck, mine)
+            info["sug_action"] = self._get_dispatch_action(truck, mine)  # 根据当前观察获取建议动作
             out = {
                 "ob": self.current_observation,
                 "info": info,
@@ -58,7 +62,7 @@ class RLDispatcher(BaseDispatcher):
                 "done": done
             }
 
-            # 断点 2: 将观察值放入队列之前
+            # 2: 将观察值放入Agent
             try:
                 mine.mine_logger.debug(f"PUTTING {truck.name} at {mine.env.now}")
                 self.obs_queue.put(out, timeout=5)  # 将观察值放入队列
@@ -67,16 +71,17 @@ class RLDispatcher(BaseDispatcher):
                 mine.mine_logger.error("Observation queue is full. Possible deadlock.")
                 raise TimeoutError("Observation queue is full")
 
-            # 断点 3: 从队列中获取动作之前
+            # 3: 获取Agent动作
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
                 raise TimeoutError("Timeout occurred before getting action")
 
             action = self.act_queue.get()  # 从队列中获取动作.这里不设置超时。
             mine.mine_logger.debug(f"RECEIVED order of {truck.name} at {mine.env.now}, action is {action}")  # debug
-            self.last_reward = self._get_reward(mine=mine, truck=truck, action=action, dense=True)
-
-            # 断点 4: 成功获取动作之后
+            #self.last_reward = self._get_reward(mine=mine, truck=truck, action=action, dense=True)  # 预估当前决策的奖励，下一步作为reward返回
+            self.update_order_info(truck, mine, action)  # 记录当前订单信息
+            self.last_order_time = mine.env.now
+            # 断点 4: 成功获取Agent动作之后
             return action
 
         except TimeoutError as e:
@@ -93,7 +98,17 @@ class RLDispatcher(BaseDispatcher):
         finally:
             end_time = time.time()
             if end_time - start_time > 1:
-                mine.mine_logger.debug(f"Step execution time: {end_time - start_time:.2f} seconds. obs-lock: {self.obs_queue._rlock} act-lock: {self.act_queue._rlock}. Env time: {mine.env.now} Done: {mine.done} Truckname:{truck.name} Location: {truck.current_location.name} OBS_queue_len:{self.obs_queue.qsize()}, act_queue_len: {self.act_queue.qsize()}")
+                mine.mine_logger.debug(f"Step execution time: {end_time - start_time:.2f} seconds. obs-lock: {self.obs_queue._rlock} act-lock: {self.act_queue._rlock}. Env time: {mine.env.now} Done: {mine.done} Truckname:{truck.name} Location: {truck.current_location.name} OBS_queue_len:{self.obs_queue}, act_queue_len: {self.act_queue}")
+
+    def update_order_info(self, truck: Truck, mine: Mine, action: int):
+        """
+        更新订单信息
+        :param truck: 当前的卡车对象
+        :param mine: 当前的矿山对象
+        :param action: 当前的动作
+        """
+        self.last_truck = truck
+        self.last_action = action
 
     def give_init_order(self, truck: Truck, mine: Mine) -> int:
         """
@@ -144,166 +159,213 @@ class RLDispatcher(BaseDispatcher):
         return decision
 
     def _get_reward(self, mine: Mine, truck:"Truck"=None, action:int=None, dense:bool=False) -> int:
-        """
+        """函数功能：预估当前决策的奖励，下一步作为reward返回
+
         最大化产量方向的reward
         可以自定义配置
-        RewardShaping
-        :param mine:
-        :return:
+        这部分我需要重新设计
+        惩罚：
+            车队的总排队时间
+            车辆的总卸载时间
+            系统堵车用时
+            车辆路上的运行时间
+            （铲车维护导致车辆等待，这一部分其实包含在了排队时间中，这里不再添加）
+        奖励：
+            车辆的中间产出log(delta + 1) 而不是直接输出高方差
+            最终车辆产出
         """
-        """
-        最终reward = MF匹配度reward(final) + 中间选择倾向度reward
-        """
+        # 必要信息
+        action = action
+        # order_type = "init" if isinstance(truck.current_location, ChargingSite) else "haul" if isinstance(truck.current_location, LoadSite) else "unhaul"
         reward = 0
-        trip_reward = 0
-        if dense:
-            if isinstance(truck.current_location, ChargingSite):
-                charging_to_load: list[float] = mine.road.charging_to_load  # 从备停区到各装载点的距禽(千米)
-                avg_velocity: float = truck.truck_speed  # 车辆平均配速(千米/小时)
-                now_time = mine.env.now  # 当前仿真时间(min). Actually, this is just 0.0 because it's init order which launches at the beginning of the simulation
+        # trip_reward = 0
+        final_tons_reward = 0
+        delta_tons_reward = 0
 
-                # 计算车辆(从备停区)抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:np.array. 1D Float)
-                reach_load_time = now_time + 60 * np.array(charging_to_load) / avg_velocity
+        # 惩罚项目
+        # 1. 车队的总排队时间
+        #est_wait_times_in_queue = np.array([dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) if order_type == "unhaul" else np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites])
+        #st_wait_time_in_queue = est_wait_times_in_queue[action]
+        last_order_time, cur_time = self.last_order_time, mine.env.now
+        wait_truck_event_all = [event for t in mine.trucks for event in t.event_pool.get_even_by_type("wait shovel") ]
+        wait_duration = 0
+        for wait_event in wait_truck_event_all:
+            wait_start_time = wait_event.info["start_time"]
+            wait_end_time = wait_event.info.get("end_time") or cur_time
+            if wait_end_time is None:
+                wait_end_time = cur_time
+            if max(wait_start_time, last_order_time) < min(wait_end_time, cur_time):
+                # 统计wait shovel事件 last_order_time~mine.env.now中的持续时间
+                wait_duration += min(wait_end_time, cur_time) - max(wait_start_time, last_order_time)
 
-                # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
-                trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
-                                   range(len(mine.load_sites))]
-                load_time_on_road_trucks = [
-                    sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
-                        i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
-                load_available_time = now_time + np.array(
-                    [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
-                    load_time_on_road_trucks)  # 装载点的预期服务时间， 包含了路上的卡车和正在排队的卡车
-                service_available_time = np.maximum(load_available_time, reach_load_time)
+        # 2. 车辆的装卸载时间(按照平均铲车生产力计算)
+        # service_time_cost = 1 if order_type == "unhaul" else np.array([truck.truck_capacity/(load_site.load_site_productivity/len(load_site.shovel_list)) for load_site in mine.load_sites])
+        get_shovel_event_all = [event for t in mine.trucks for event in t.event_pool.get_even_by_type("get shovel")]
+        shovel_duration = 0
+        for shovel_event in get_shovel_event_all:
+            shovel_start_time = shovel_event.info["start_time"]
+            shovel_end_time = shovel_event.info.get("end_time") or cur_time
+            if max(shovel_start_time, last_order_time) < min(shovel_end_time, cur_time):
+                # 统计get shovel事件 last_order_time~mine.env.now中的持续时间
+                shovel_duration += min(shovel_end_time, cur_time) - max(shovel_start_time, last_order_time)
+        get_dumper_event_all = [event for t in mine.trucks for event in t.event_pool.get_even_by_type("get dumper")]
+        dumper_duration = 0
+        for dumper_event in get_dumper_event_all:
+            dumper_start_time = dumper_event.info["start_time"]
+            dumper_end_time = dumper_event.info.get("end_time") or cur_time
+            if max(dumper_start_time, last_order_time) < min(dumper_end_time, cur_time):
+                # 统计get dumper事件 last_order_time~mine.env.now中的持续时间
+                dumper_duration += min(dumper_end_time, cur_time) - max(dumper_start_time, last_order_time)
+        service_duration = shovel_duration + dumper_duration
 
-                # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
-                assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
-                loading_service_time = np.array(
-                    [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
-                     load_site in mine.load_sites])  # mins
-                trip_times =(service_available_time + loading_service_time - now_time)
-                trip_rewards = np.exp(-0.1*trip_times) - 0.5
-            # HAUL PHASE REWARD
-            elif isinstance(truck.current_location, LoadSite):
-                current_location = truck.current_location
-                assert current_location.__class__.__name__ == "LoadSite", "current_location is not a LoadSite"
-                avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
-                now_time = mine.env.now  # 当前仿真时间(min)
-                cur_index = mine.load_sites.index(current_location)  # 获取当前位置的index
+        # 3. 堵车事件数量（堵车事件没有办法预测，只是对当前状态的惩罚）（每个单位时间对正在进行中的堵车进行惩罚）
+        truck_jams_all = mine.random_event_pool.get_even_by_type("RoadEvent:jam")
+        jam_duration = 0
+        for jam_event in truck_jams_all:
+            jam_start_time = jam_event.info["start_time"]
+            est_end_time = jam_event.info["est_end_time"] or cur_time
+            if max(jam_start_time, last_order_time) < min(est_end_time, cur_time):
+                # 统计jam事件在last_order_time~mine.env.now中的持续时间
+                jam_duration += min(est_end_time, cur_time) - max(jam_start_time, last_order_time)
 
-                # 获取当前位置到所有dump site的距离
-                cur_to_dump: np.array = mine.road.road_matrix[cur_index, :]
+        # 4. 车辆路上的运行时间
+        truck_move_all = [event for t in mine.trucks for event in t.event_pool.get_even_by_type("init") + t.event_pool.get_even_by_type("haul") + t.event_pool.get_even_by_type("unhaul")]
+        move_duration = 0
+        for move_event in truck_move_all:
+            move_start_time = move_event.info["start_time"]
+            move_end_time = move_event.info.get("end_time") or cur_time
+            if max(move_start_time, last_order_time) < min(move_end_time, cur_time):
+                # 统计move事件在last_order_time~mine.env.now中的持续时间
+                move_duration += min(move_end_time, cur_time) - max(move_start_time, last_order_time)
 
-                # 计算车辆抵达各卸载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
-                reach_dump_time = now_time + 60 * cur_to_dump / avg_velocity
-
-                trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.dump_sites[i]) for i
-                                   in range(len(mine.dump_sites))]
-                dump_time_on_road_trucks = [
-                    (sum([1 for each_truck in each_road]) / len(mine.dump_sites[i].dumper_list)) *
-                    mine.dump_sites[i].dumper_list[0].dump_time for i, each_road in
-                    enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
-                # 计算车辆在各卸载点预期获得服务时间(dump_available_time 为各卸载点处上一次卸载的完成时间:np.array)
-                dump_available_time = now_time + np.array(
-                    [dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) + np.array(
-                    dump_time_on_road_trucks)
-                service_available_time = np.maximum(dump_available_time, reach_dump_time)
-                # 计算车辆驶往各卸载点, 并最终完成卸载的预期任务完成时间, 并取最小值 (loading_time 为各挖机卸载时间:np.array)
-                unloading_time = np.array([dump_site.dumper_list[0].dump_time for dump_site in mine.dump_sites])
-                trip_times =(service_available_time + unloading_time - now_time)
-                trip_rewards = np.exp(-0.1*trip_times) - 0.5
-
-            # UNHAUL PHASE REWARD
-            elif isinstance(truck.current_location, DumpSite):
-                current_location = truck.current_location
-                assert current_location.__class__.__name__ == "DumpSite", "current_location is not a DumpSite"
-                avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
-                now_time = mine.env.now
-                cur_index = mine.dump_sites.index(current_location)
-
-                # 获取当前位置到所有装载点的距离
-                cur_to_load = mine.road.road_matrix[:, cur_index]
-
-                # 计算车辆抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
-                reach_load_time = now_time + 60 * cur_to_load / avg_velocity
-
-                trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
-                                   range(len(mine.load_sites))]
-                load_time_on_road_trucks = [
-                    sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
-                        i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
-                # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
-                load_available_time = now_time + np.array(
-                    [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
-                    load_time_on_road_trucks)
-                service_available_time = np.maximum(load_available_time, reach_load_time)
-
-                # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
-                assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
-                loading_time = np.array(
-                    [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
-                     load_site in
-                     mine.load_sites])  # mins
-                trip_times =(service_available_time + loading_time - now_time)
-                trip_rewards = np.exp(-0.1*trip_times) - 0.5
-            else:
-                raise Exception(f"Truck {truck.name} at {truck.current_location.name} order is unkown: {action}")
-
-            trip_reward = trip_rewards[action]
-
-        if action is None and truck is None:
-            # THIS IS LAST STEP, return total reward
-            baseline_production = 12000
-            reward += (self.last_production - baseline_production)/1000
-            # reward += self.last_production/1000
-            match_factor = mine.match_factor
-            # if match_factor is inf
-            if match_factor == float("inf"):
-                raise Exception("Match factor is inf at end")
-            print("FIN-MatchFactor:", match_factor)
-            reward += (match_factor-0.5)*1000
-
-        # # INIT PHASE REWARD
-        # if isinstance(truck.current_location, ChargingSite):
-        #     load_site_productivities = normalize_list_inplace([load_site.load_site_productivity for load_site in mine.load_sites])
-        #     load_site_distances = normalize_list_inplace([mine.road.charging_to_load[i] for i in range(mine.road.load_site_num)])
-        #     load_site_traffic = normalize_list_inplace([mine.road.road_status[(mine.charging_site.name, load_site.name)]["truck_count"] for load_site in mine.load_sites])
-        #     reward = static_weight[0]*productivity_reward_func(load_site_productivities[action]) + static_weight[1]*distance_reward_func(load_site_distances[action]) + static_weight[2]*traffic_reward_func(load_site_traffic[action])
-        #
-        # # HAUL PHASE REWARD
-        # elif isinstance(truck.current_location, LoadSite):
-        #     dump_site_productivities = normalize_list_inplace([dump_site.dump_site_productivity for dump_site in mine.dump_sites])
-        #     dump_site_distances = normalize_list_inplace([mine.road.road_matrix[action][i] for i in range(mine.road.dump_site_num)])
-        #     dump_site_traffic = normalize_list_inplace([mine.road.road_status[(truck.current_location.name, dump_site.name)]["truck_count"] for dump_site in mine.dump_sites])
-        #     reward = static_weight[0]*productivity_reward_func(dump_site_productivities[action]) + static_weight[1]*distance_reward_func(dump_site_distances[action]) + static_weight[2]*traffic_reward_func(dump_site_traffic[action])
-        # # UNHAUL PHASE REWARD
-        # elif isinstance(truck.current_location, DumpSite):
-        #     load_site_productivities = normalize_list_inplace([load_site.load_site_productivity for load_site in mine.load_sites])
-        #     load_site_distances = normalize_list_inplace([mine.road.road_matrix[i][action] for i in range(mine.road.load_site_num)])
-        #     load_site_traffic = normalize_list_inplace([mine.road.road_status[(truck.current_location.name,load_site.name)]["truck_count"] for load_site in mine.load_sites])
-        #     reward = static_weight[0]*productivity_reward_func(load_site_productivities[action]) + static_weight[1]*distance_reward_func(load_site_distances[action]) + static_weight[2]*traffic_reward_func(load_site_traffic[action])
-        # else:
-        #     raise Exception(f"Truck {truck.name} at {truck.current_location.name} order is unkown: {action}")
-        #
-        # # reward += 1
-        # # POTENTIAL REWARD SHAPING
-        cur_production = mine.produce_tons
-        # reward = (cur_production - self.last_production)/1000 if (cur_production - self.last_production)>0 else -1
-        self.last_production = cur_production
         # if dense:
-        #     # use group dispatch reward
-        #     dispatch = FixedGroupDispatcher()
-        #     if isinstance(truck.current_location, DumpSite):
-        #         decision = dispatch.give_back_order(truck, mine)
-        #     elif isinstance(truck.current_location, ChargingSite):
-        #         decision = dispatch.give_init_order(truck, mine)
+        #     if isinstance(truck.current_location, ChargingSite):
+        #         charging_to_load: list[float] = mine.road.charging_to_load  # 从备停区到各装载点的距禽(千米)
+        #         avg_velocity: float = truck.truck_speed  # 车辆平均配速(千米/小时)
+        #         now_time = mine.env.now  # 当前仿真时间(min). Actually, this is just 0.0 because it's init order which launches at the beginning of the simulation
+        #
+        #         # 计算车辆(从备停区)抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:np.array. 1D Float)
+        #         reach_load_time = now_time + 60 * np.array(charging_to_load) / avg_velocity
+        #
+        #         # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
+        #         trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
+        #                            range(len(mine.load_sites))]
+        #         load_time_on_road_trucks = [
+        #             sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
+        #                 i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+        #         load_available_time = now_time + np.array(
+        #             [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
+        #             load_time_on_road_trucks)  # 装载点的预期服务时间， 包含了路上的卡车和正在排队的卡车
+        #         service_available_time = np.maximum(load_available_time, reach_load_time)
+        #
+        #         # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
+        #         assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
+        #         loading_service_time = np.array(
+        #             [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
+        #              load_site in mine.load_sites])  # mins
+        #         trip_times =(service_available_time + loading_service_time - now_time)
+        #         trip_rewards = np.exp(-0.1*trip_times) - 0.02
+        #     # HAUL PHASE REWARD
+        #     elif isinstance(truck.current_location, LoadSite):
+        #         current_location = truck.current_location
+        #         assert current_location.__class__.__name__ == "LoadSite", "current_location is not a LoadSite"
+        #         avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
+        #         now_time = mine.env.now  # 当前仿真时间(min)
+        #         cur_index = mine.load_sites.index(current_location)  # 获取当前位置的index
+        #
+        #         # 获取当前位置到所有dump site的距离
+        #         cur_to_dump: np.array = mine.road.road_matrix[cur_index, :]
+        #
+        #         # 计算车辆抵达各卸载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
+        #         reach_dump_time = now_time + 60 * cur_to_dump / avg_velocity
+        #
+        #         trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.dump_sites[i]) for i
+        #                            in range(len(mine.dump_sites))]
+        #         dump_time_on_road_trucks = [
+        #             (sum([1 for each_truck in each_road]) / len(mine.dump_sites[i].dumper_list)) *
+        #             mine.dump_sites[i].dumper_list[0].dump_time for i, each_road in
+        #             enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+        #         # 计算车辆在各卸载点预期获得服务时间(dump_available_time 为各卸载点处上一次卸载的完成时间:np.array)
+        #         dump_available_time = now_time + np.array(
+        #             [dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites]) + np.array(
+        #             dump_time_on_road_trucks)
+        #         service_available_time = np.maximum(dump_available_time, reach_dump_time)
+        #         # 计算车辆驶往各卸载点, 并最终完成卸载的预期任务完成时间, 并取最小值 (loading_time 为各挖机卸载时间:np.array)
+        #         unloading_time = np.array([dump_site.dumper_list[0].dump_time for dump_site in mine.dump_sites])
+        #         trip_times =(service_available_time + unloading_time - now_time)
+        #         trip_rewards = np.exp(-0.1*trip_times) - 0.02
+        #
+        #     # UNHAUL PHASE REWARD
+        #     elif isinstance(truck.current_location, DumpSite):
+        #         current_location = truck.current_location
+        #         assert current_location.__class__.__name__ == "DumpSite", "current_location is not a DumpSite"
+        #         avg_velocity = truck.truck_speed  # 车辆平均配速(千米/小时)
+        #         now_time = mine.env.now
+        #         cur_index = mine.dump_sites.index(current_location)
+        #
+        #         # 获取当前位置到所有装载点的距离
+        #         cur_to_load = mine.road.road_matrix[:, cur_index]
+        #
+        #         # 计算车辆抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
+        #         reach_load_time = now_time + 60 * cur_to_load / avg_velocity
+        #
+        #         trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in
+        #                            range(len(mine.load_sites))]
+        #         load_time_on_road_trucks = [
+        #             sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[
+        #                 i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
+        #         # 计算车辆在各装载点预期获得服务时间(load_available_time is the time when the last truck finished loading at each load site:np.array)
+        #         load_available_time = now_time + np.array(
+        #             [load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(
+        #             load_time_on_road_trucks)
+        #         service_available_time = np.maximum(load_available_time, reach_load_time)
+        #
+        #         # 计算车辆驶往各装载点, 并最终完成装载的预期任务完成时间, 并取最小值 (loading_time 为各挖机装载时间:np.array)
+        #         assert mine.load_sites[0].load_site_productivity != 0, "load_site_productivity is 0"
+        #         loading_time = np.array(
+        #             [truck.truck_capacity / (load_site.load_site_productivity / len(load_site.shovel_list)) for
+        #              load_site in
+        #              mine.load_sites])  # mins
+        #         trip_times =(service_available_time + loading_time - now_time)
+        #         trip_rewards = np.exp(-0.1*trip_times) - 0.02
         #     else:
-        #         # LoadSite
-        #         decision = dispatch.give_haul_order(truck, mine)
-        #     # if action == decision, give bonus
-        #     # reward = reward + 0.1 if action == decision else reward - 0.1  # just supervise
-        # return reward
-        reward += trip_reward
+        #         raise Exception(f"Truck {truck.name} at {truck.current_location.name} order is unkown: {action}")
+        #
+        #     trip_reward = trip_rewards[action]
+
+        if action is None and truck is None and mine.env.now!=0:
+            # THIS IS LAST STEP, return total reward
+            baseline_production = 11000
+            final_tons = (self.last_production - baseline_production)
+            if final_tons > 0:
+                final_tons_reward = 0.1 * final_tons
+            #match_factor = mine.match_factor
+            #print("FIN-MatchFactor:", match_factor)
+            # reward += (match_factor-0.5)*1000
+
+        # 5. 车辆的中间产出log(delta + 1) 而不是直接输出高方差
+        cur_production = mine.produce_tons
+        delta_tons = (cur_production - self.last_production)
+        self.last_production = cur_production
+
+        # (2) 负向惩罚项：让系数更小
+        # 例如改成 -0.01 或 -0.005
+        wait_penalty = -0.1 * wait_duration
+        service_penalty = -0.1 * service_duration
+        jam_penalty = -0.1 * jam_duration
+        move_penalty = -0.01 * move_duration
+
+        delta_tons_reward = 2.0 * np.log(delta_tons + 1)  # what type: float
+
+        reward = wait_penalty + service_penalty + jam_penalty + move_penalty \
+                 + delta_tons_reward + final_tons_reward
+
+        # if cur_time > 0:
+        #     print(f"Reward = {reward:.2f}, "
+        #           f"(-wait:{wait_penalty:.2f}, -svc:{service_penalty:.2f}, "
+        #           f"-jam:{jam_penalty:.2f}, -move:{move_penalty:.2f}, "
+        #           f"+deltaTons:{delta_tons_reward:.2f}, +final:{final_tons_reward:.2f})")
+
         return reward
 
     def _get_observation(self, truck: Truck, mine: Mine):
@@ -331,7 +393,7 @@ class RLDispatcher(BaseDispatcher):
             event_name = "unhaul"
             trucks_on_roads = [mine.road.truck_on_road(start=truck.current_location, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
             load_time_on_road_trucks = [sum([each_truck.truck_capacity for each_truck in each_road]) / mine.load_sites[i].load_site_productivity for i, each_road in enumerate(trucks_on_roads)]  # 路上的卡车需要的装载用时
-            sig_wait_est =  np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)
+            sig_wait_est = np.array([load_site.estimated_queue_wait_time for load_site in mine.load_sites]) + np.array(load_time_on_road_trucks)
         elif isinstance(truck.current_location, ChargingSite):
             event_name = "init"
             trucks_on_roads = [mine.road.truck_on_road(start=mine.charging_site, end=mine.load_sites[i]) for i in range(len(mine.load_sites))]
@@ -349,6 +411,7 @@ class RLDispatcher(BaseDispatcher):
             "capacities": [load_site.load_site_productivity for load_site in mine.load_sites]+[dump_site.dump_site_productivity for dump_site in mine.dump_sites],
             "est_wait": [load_site.estimated_queue_wait_time for load_site in mine.load_sites]+[dump_site.estimated_queue_wait_time for dump_site in mine.dump_sites],
             "single_est_wait": sig_wait_est,
+            "service_ratio": [load_site.service_ability_ratio for load_site in mine.load_sites]+[dump_site.service_ability_ratio for dump_site in mine.dump_sites],
             # summary info
             "produced_tons": [load_site.produced_tons for load_site in mine.load_sites] + [dump_site.produce_tons for dump_site in mine.dump_sites],
             "service_counts": [load_site.service_count for load_site in mine.load_sites] + [dump_site.service_count for dump_site in mine.dump_sites],

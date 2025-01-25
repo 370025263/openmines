@@ -33,13 +33,13 @@ class ParkingLot:
                 shovel_tons = res_obj.shovel_tons
                 shovel_cycle_time = res_obj.shovel_cycle_time
                 shovel_queue_wait_total_time = 0
-                shovel_last_service_time = res_obj.last_service_time  # Shovel上一次服务时间
-                for i, load_request in enumerate(resources[index].queue):  # 遍历某铲车的装载请求
+                shovel_last_service_time = max(res_obj.last_service_time,res_obj.last_service_done_time)  # Shovel上一次服务时间
+                for i, load_request in enumerate(resources[index].queue + resources[index].users):  # 遍历某铲车的装载请求
                     truck = load_request.truck
                     load_site = load_request.load_site
                     shovel_queue_wait_total_time += (truck.truck_capacity / res_obj.shovel_tons) * res_obj.shovel_cycle_time
-                time_used_loading = env.now - shovel_last_service_time
-                shovel_estimated_waiting_time = (shovel_queue_wait_total_time - time_used_loading) if shovel_queue_wait_total_time > time_used_loading else 0
+                time_used_loading = env.now - shovel_last_service_time if resources[index].queue + resources[index].users else 0
+                shovel_estimated_waiting_time = max(shovel_last_service_time + shovel_queue_wait_total_time - env.now, 0)  # 时间段，不是时间点
                 res_obj.est_waiting_time = shovel_estimated_waiting_time  # 铲车的预期等待时间
                 assert time_used_loading >= 0, "Time used for loading should be greater than 0"
             # 如果是dumper，那就对dumper队列等待时间进行统计(dumper.est_waiting_time)
@@ -150,6 +150,7 @@ class LoadSite:
         self.status = dict()  # the status of shovel
         self.produced_tons = 0  # the produced tons of shovel
         self.service_count = 0  # the number of shovel-vehicle cycle
+        self.service_ability_ratio = 0  # the ability of load site to serve trucks(0-1), the shovel may be breakdown
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
         self.avg_queue_wait_time = 0  # the average waiting time for coming trucks in queue
         self.load_site_productivity = 0  # the productivity of load site
@@ -171,20 +172,17 @@ class LoadSite:
         """
         while True:
             # 获取铲车信息
-            for shovel in self.shovel_list:
-                self.produced_tons += shovel.produced_tons
-                self.service_count += shovel.service_count
+            self.produced_tons = sum(shovel.produced_tons for shovel in self.shovel_list)
+            self.service_count = sum(shovel.service_count for shovel in self.shovel_list)
             self.status[int(env.now)] = {
                 "produced_tons": self.produced_tons,
                 "service_count": self.service_count,
             }
-            # 统计装载区的装载能力
+            # 统计装载区的理论装载能力
             load_site_productivity = sum(
                 shovel.shovel_tons / shovel.shovel_cycle_time for shovel in self.shovel_list)
             self.load_site_productivity = load_site_productivity
-            # reset
-            self.produced_tons = 0
-            self.service_count = 0
+            self.service_ability_ratio = sum((shovel.shovel_tons / shovel.shovel_cycle_time) * (0 if shovel.repair else 1) for shovel in self.shovel_list) / self.load_site_productivity
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 

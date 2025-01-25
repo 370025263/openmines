@@ -13,40 +13,70 @@ from typing import Optional, Dict, Any
 from openmines.src.utils.rl_env import prepare_env
 
 
-def preprocess_observation(observation):
+def preprocess_observation(observation, max_sim_time):
     """预处理原始观察，使其符合observation_space的格式"""
 
-    """特征预处理v2 212 dim"""
+    """
+    0.订单信息
+    """
+    # 1.订单类型,时间信息
     event_name = observation['event_name']
     if event_name == "init":
-        dis_mask = [1]*5 + [0] * 10
-        site_mask = [1]*5 + [0]*5
-
+        event_type = [1, 0, 0]
+        action_space_n = observation['info']['load_num']
     elif event_name == "haul":
-        dis_mask = [0]*5 + [1]*5 + [0]*5
-        site_mask = [0]*5 + [1]*5
-
+        event_type = [0, 1, 0]
+        action_space_n = observation['info']['unload_num']
     else:
-        dis_mask = [0]*10 + [1]*5
-        site_mask = [1]*5 + [0]*5
-    # travel time = dis_mask * distances / 25
-    travel_time = np.array(observation['cur_road_status']['distances'])*60 / 25
+        event_type = [0, 0, 1]
+        action_space_n = observation['info']['load_num']
+    # 2.当前订单时间绝对位置和相对位置
+    time_delta = float(observation['info']['delta_time']) / max_sim_time  # 距离上次调度的时间
+    time_now = float(observation['info']['time']) / max_sim_time  # 当前时间(正则化）
+    time_left = 1 - time_now  # 距离结束时间
+    order_state = np.array([event_type[0], event_type[1], event_type[2], time_delta, time_now, time_left])
 
-    # est_wait
-    est_wait = observation['target_status']['single_est_wait'] # np.array already
-
-    # location
+    """
+    1.车辆自身信息
+    """
+    # 矿山总卡车数目（用于正则化）
+    truck_num = observation['mine_status']['truck_count']
+    # 4.车辆当前位置One-hot编码
     truck_location_onehot = np.array(observation["the_truck_status"]["truck_location_onehot"])
+    # 车辆装载量，车辆循环时间（正则化）
+    truck_features = np.array([
+        np.log(observation['the_truck_status']['truck_load'] + 1),
+        np.log(observation['the_truck_status']['truck_cycle_time'] + 1),
+    ])
+    truck_self_state = np.concatenate([truck_location_onehot, truck_features])
 
-    # trucks on road
-    truck_counts = np.array(observation['cur_road_status']['truck_counts'])
+    """
+    2.道路相关信息
+    """
+    # 车预期行驶时间
+    travel_time = np.array(observation['cur_road_status']['distances']) * 60 / 25
+    # 道路上卡车数量
+    truck_counts = np.array(observation['cur_road_status']['truck_counts']) / (truck_num + 1e-8)
+    # 道路距离信息
+    road_dist = np.array(observation['cur_road_status']['oh_distances'])
+    # 道路拥堵信息
+    road_jam = np.array(observation['cur_road_status']['oh_truck_jam_count'])
 
-    state = np.concatenate([travel_time, est_wait, truck_location_onehot, truck_counts])
-    return state
-
-    # # 提取truck_location_onehot作为location_index
-    # truck_location_onehot = np.array(observation["the_truck_status"]["truck_location_onehot"])
-    #
+    road_states = np.concatenate([travel_time, truck_counts, road_dist, road_jam])
+    """
+    3.目标点相关信息
+    """
+    # 预期等待时间
+    est_wait = np.log(observation['target_status']['single_est_wait'] + 1)  # 包含了路上汽车+队列汽车的目标装载点等待时间
+    tar_wait_time = np.log(np.array(observation['target_status']['est_wait']) + 1)  # 不包含路上汽车
+    # 队列长度（正则化）
+    queue_lens = np.array(observation['target_status']['queue_lengths']) / (truck_num + 1e-8)
+    # 装载量
+    tar_capa = np.log(np.array(observation['target_status']['capacities']) + 1)
+    # 各个目标点当前的产能系数(维护导致的产能下降）
+    ability_ratio = np.array(observation['target_status']['service_ratio'])
+    # 已经生产的矿石量（正则化）
+    produced_tons = np.log(np.array(observation['target_status']['produced_tons']) + 1)
     # processed_obs = {
     #     "the_truck_status": {
     #         "truck_location_index": truck_location_onehot,  # 已经是one-hot向量
@@ -74,56 +104,14 @@ def preprocess_observation(observation):
     #         "total_production": np.array([observation["mine_status"].get("total_production", 0)], dtype=np.float32),
     #     }
     # }
-    # """特征预处理v1 212 dim"""
-    # time_delta = float(observation['info']['delta_time'])
-    # time_now = float(observation['info']['time'])
-    #
-    # event_name = observation['event_name']
-    # if event_name == "init":
-    #     event_type = [1, 0, 0]
-    #     action_space_n = observation['info']['load_num']
-    # elif event_name == "haul":
-    #     event_type = [0, 1, 0]
-    #     action_space_n = observation['info']['unload_num']
-    # else:
-    #     event_type = [0, 0, 1]
-    #     action_space_n = observation['info']['load_num']
-    #
-    # truck_location: list = observation['the_truck_status']['truck_location_onehot']  # [1,M+N+1]
-    # # print("event_type", event_type)
-    # # print("truck_location", truck_location)
-    #
-    # order_and_position = np.array([event_type + truck_location + [action_space_n]])  # action_space_n maybe meanless
-    # truck_num = observation['mine_status']['truck_count']
-    #
-    # truck_features = np.array([
-    #     np.log(observation['the_truck_status']['truck_load'] + 1),
-    #     np.log(observation['the_truck_status']['truck_cycle_time'] + 1),
-    # ])
-    #
-    # # range should be 0-M+N as well.
-    # target_features = np.concatenate([
-    #     np.array(observation['target_status']['queue_lengths']) / (truck_num + 1e-8),
-    #     np.log(np.array(observation['target_status']['capacities']) + 1),
-    #     np.log(np.array(observation['target_status']['est_wait']) + 1),
-    # ])
-    # # road distances, traffic truck count
-    # road_dist = np.array(observation['cur_road_status']['oh_distances'])
-    # road_traffic = np.array(observation['cur_road_status']['oh_truck_jam_count'])
-    # road_jam = np.array(observation['cur_road_status']['oh_truck_jam_count'])
-    # # print("road_dist", road_dist)
-    # # print("road_traffic", road_traffic)
-    #
-    # state = np.concatenate([order_and_position.squeeze(), truck_features, target_features, road_dist, road_traffic,
-    #                         road_jam])  # ])  # 3+M+N+1,2,3(M+N),(M+(M+N)*2)*3
-    # # state = np.concatenate([order_and_position.squeeze()])
-    # assert not np.isnan(state).any(), f"NaN detected in state: {state}"
-    # assert not np.isnan(time_delta), f"NaN detected in time_delta: {time_delta}"
-    # assert not np.isnan(time_now), f"NaN detected in time_now: {time_now}"
-    #
-    # event_type_index = event_type.index(1)
-    # return state#, event_type_index, time_delta, time_now
+    tar_state = np.concatenate([est_wait, tar_wait_time, queue_lens, tar_capa, ability_ratio, produced_tons])
 
+    state = np.concatenate([order_state, truck_self_state, road_states, tar_state])
+    assert not np.isnan(state).any(), f"NaN detected in state: {state}"
+    assert not np.isnan(time_delta), f"NaN detected in time_delta: {time_delta}"
+    assert not np.isnan(time_now), f"NaN detected in time_now: {time_now}"
+
+    return state
 
 
 class GymMineEnv(gym.Env):
@@ -143,6 +131,7 @@ class GymMineEnv(gym.Env):
         self.log = log
         self.ticks = ticks
         self.seed_value = seed
+        self.max_sim_time = self.config['sim_time']
 
         # 定义动作空间和观察空间
         # 动作空间：离散空间，最大值为最大的可选目标数量
@@ -154,7 +143,7 @@ class GymMineEnv(gym.Env):
         road_n = self.load_site_n * self.dump_site_n * 2 + self.load_site_n
         site_n = self.load_site_n + self.dump_site_n
         # 观察空间：使用Dict空间来匹配原始环境的字典格式
-        self.observation_space = spaces.Box(low=0, high=np.inf, shape=(26,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=np.inf, shape=(162,), dtype=np.float32)
         #
         #     (
         #     spaces.Dict({
@@ -222,7 +211,7 @@ class GymMineEnv(gym.Env):
         observation = out["ob"]
         info = out["info"]
         # 预处理观察
-        processed_obs = preprocess_observation(observation)
+        processed_obs = preprocess_observation(observation, self.max_sim_time)
         return processed_obs, info
 
     def step(self, action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
@@ -239,7 +228,7 @@ class GymMineEnv(gym.Env):
         info = out["info"]
 
         # 预处理观察
-        processed_obs = preprocess_observation(observation)
+        processed_obs = preprocess_observation(observation, self.max_sim_time)
 
         return processed_obs, reward, terminated, truncated, info
 
@@ -253,7 +242,6 @@ class GymMineEnv(gym.Env):
         """实现渲染方法"""
         # 当前环境不支持渲染
         pass
-
 
 
 
@@ -275,6 +263,7 @@ class ThreadMineEnv(gym.Env):
         self.log = log
         self.ticks = ticks
         self.seed_value = seed
+        self.max_sim_time = self.config['sim_time']
 
         # 定义动作空间和观察空间
         max_choices = max(
@@ -287,7 +276,7 @@ class ThreadMineEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0,
             high=np.inf,
-            shape=(26,),
+            shape=(162,),
             dtype=np.float32
         )
 
@@ -327,7 +316,7 @@ class ThreadMineEnv(gym.Env):
         info = out["info"]
 
         # 预处理观察
-        processed_obs = preprocess_observation(observation)
+        processed_obs = preprocess_observation(observation, self.max_sim_time)
         return processed_obs, info
 
     def step(self, action: int) -> tuple[Any, float, bool, bool, dict[str, Any]]:
@@ -344,7 +333,7 @@ class ThreadMineEnv(gym.Env):
         info = out["info"]
 
         # 预处理观察
-        processed_obs = preprocess_observation(observation)
+        processed_obs = preprocess_observation(observation, self.max_sim_time)
 
         return processed_obs, reward, terminated, truncated, info
 
