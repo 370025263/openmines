@@ -17,6 +17,7 @@ from openmines.src.load_site import LoadSite
 from openmines.src.truck import Truck
 from openmines.src.mine import Mine
 from openmines.src.dispatch_algorithms.fixed_group_dispatch import FixedGroupDispatcher
+from openmines.src.dispatch_algorithms.shortest_trip_dispatcher import ShortestTripDispatcher
 
 
 
@@ -148,7 +149,7 @@ class RLDispatcher(BaseDispatcher):
         """
         """
         # use group dispatch reward
-        dispatch = FixedGroupDispatcher()
+        dispatch = ShortestTripDispatcher()
         if isinstance(truck.current_location, DumpSite):
             decision = dispatch.give_back_order(truck, mine)
         elif isinstance(truck.current_location, ChargingSite):
