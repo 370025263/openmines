@@ -17,7 +17,6 @@ from torch.utils.tensorboard import SummaryWriter
 import openmines_gym
 
 
-
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
@@ -94,7 +93,7 @@ class Args:
     guide_decay_steps: int = 500_000
 
     # ====== 新增的产量阈值 + 教师权重因子 ======
-    teacher_acceptable_tons: float = 12000
+    teacher_acceptable_tons: float = 13000
     """当 produce_tons >= 这个数值，视为模型已足够好，可将教师loss系数置 0"""
     teacher_alpha: float = 0.5
     """当未达标时，教师系数使用 alpha * (1 - c_teacher)"""
@@ -133,10 +132,11 @@ class Agent(nn.Module):
         # 提取环境信息
         self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__()
         self.dump_sites_num = envs.env_fns[0]().config['dump_sites'].__len__()
+        # 由于装载点和卸载点数量相同，这里简单取其最大值作为动作维度
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
-        # 获取观察空间的维度
-        self.obs_shape = 194  #212 #@self._get_obs_shape(212)
+        # 获取观察空间的维度（示例为 26，可根据实际情况适配）
+        self.obs_shape = 26
 
         # 共享特征提取层
         self.shared_net = nn.Sequential(
@@ -146,12 +146,10 @@ class Agent(nn.Module):
             nn.Tanh()
         )
 
-        # 为不同事件类型创建独立的actor heads
-        self.actor_heads = nn.ModuleDict({
-            '0': layer_init(nn.Linear(64, self.load_sites_num), std=0.01),
-            '1': layer_init(nn.Linear(64, self.dump_sites_num), std=0.01),
-            '2': layer_init(nn.Linear(64, self.load_sites_num), std=0.01)
-        })
+        # 用一个网络来生成动作 logits（不再区分事件类型）
+        self.actor = layer_init(nn.Linear(64, self.max_action_dim), std=0.01)
+
+        # 价值网络
         self.critic = nn.Sequential(
             layer_init(nn.Linear(self.obs_shape, 64)),
             nn.Tanh(),
@@ -164,23 +162,52 @@ class Agent(nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None, sug_action=None):
+        """
+        只使用一个 actor head。
+        如果你想根据事件类型（例如 x[:, :3] 的 one-hot）做掩码，可以在这里进行 mask 操作。
+        """
         features = self.shared_net(x)
-        batch_size = x.shape[0]
-        event_types = torch.argmax(x[:, :3], dim=1)
+        logits = self.actor(features)  # shape: [batch_size, self.max_action_dim]
 
-        logits = torch.zeros((batch_size, self.max_action_dim), device=x.device)
-
-        for i in range(batch_size):
-            event_type = str(event_types[i].item())
-            head_output = self.actor_heads[event_type](features[i:i + 1])
-            logits[i] = head_output
+        # ========== 如果需要根据事件类型做掩码，可参考以下示例 ==========
+        # event_types = torch.argmax(x[:, :3], dim=1)  # 假设最前面的3位为 one-hot 事件类型
+        # # 创建一个大的负值，供无效动作的 logit 使用
+        # NEG_INF = -1e8
+        # for i in range(features.shape[0]):
+        #     if event_types[i].item() == 1:
+        #         # 若 event_type=1 表示卸载, 则根据需要屏蔽掉装载动作等
+        #         # logits[i, some_mask_indices] = NEG_INF
+        #         pass
+        #     else:
+        #         # 若 event_type=0/2 表示装载, 屏蔽卸载动作
+        #         pass
+        # ========== end mask 示例 ==========
 
         probs = Categorical(logits=logits)
-
         if action is None:
             action = probs.sample()
-        return action, probs.log_prob(action), probs.entropy(), self.critic(x), (
-            probs.log_prob(sug_action) if sug_action is not None else None
+
+        # value
+        value = self.critic(x)
+
+        # 如果提供了教师动作 sug_action（可能为 -1 表示无效）
+        sug_logprob = None
+        if sug_action is not None:
+            valid_mask = (sug_action >= 0)
+            if valid_mask.any():
+                # 为了避免对 -1 索引报错，这里先对所有索引做 clamp
+                sug_action_clamped = torch.clamp(sug_action, min=0)
+                sug_logprob = probs.log_prob(sug_action_clamped)
+                # 对于无效部分(原始 -1)可以在外部再行处理
+            else:
+                sug_logprob = None
+
+        return (
+            action,
+            probs.log_prob(action),
+            probs.entropy(),
+            value,
+            sug_logprob
         )
 
     @property
@@ -197,18 +224,10 @@ class Agent(nn.Module):
         self.load_state_dict(torch.load(path, map_location=self.device))
 
 
-# 保留原有的 GuidanceDecay 类，但不再在训练中实际调用
 class GuidanceDecay:
-    """指导系数衰减器
-        coef
-    0.1 |XXXXXX
-        |      X
-        |       X
-        |        X
-        |         X
-    0.0 |          XXXX
-        +---------------
-        0    3M   4M  steps
+    """
+    原先的指导系数衰减器依旧保留，但不在训练流程里实际调用。
+    示例：线性衰减
     """
 
     def __init__(self,
@@ -267,6 +286,8 @@ class CheckpointManager:
                 f'checkpoint_{iteration:07d}.pt'
             )
             torch.save(checkpoint, checkpoint_path)
+        else:
+            checkpoint_path = os.path.join(self.checkpoint_dir, 'best_model.pt')  # 兼容返回值
 
         # 保存最佳模型
         if is_best:
@@ -328,7 +349,6 @@ if __name__ == "__main__":
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
     if args.track:
         import wandb
-
         wandb.init(
             project=args.wandb_project_name,
             entity=args.wandb_entity,
@@ -390,17 +410,16 @@ if __name__ == "__main__":
     dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
     values = torch.zeros((args.num_steps, args.num_envs)).to(device)
 
-    # 记录全局步数 & 产量
     global_step = 0
     start_time = time.time()
-    latest_produce_tons = 0.0  # 新增：用于存储最近一次episode结束时的产量
+    latest_produce_tons = 0.0  # 用于存储最近一次episode结束时的产量
 
     next_obs, infos = envs.reset(seed=args.seed)
     next_obs = torch.FloatTensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs).to(device)
 
-    enable_guide = True  # 新增：是否启用教师指导
-    for iteration in range(1, args.num_iterations + 1):
+    enable_guide = True  # 是否启用教师指导
+    for iteration in range(start_iteration + 1, args.num_iterations + 1):
         # Annealing the rate if instructed to do so.
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
@@ -410,7 +429,10 @@ if __name__ == "__main__":
         # 保存检查点
         if iteration % args.save_interval == 0:
             is_best = False
-            current_reward = info["episode"]["r"] if "episode" in info else 0
+            current_reward = 0
+            # 在多环境场景中，可能需要自行记录最优表现，这里仅示例
+            if "episode" in infos and "r" in infos["episode"]:
+                current_reward = infos["episode"]["r"]
             if current_reward > best_reward:
                 best_reward = current_reward
                 is_best = True
@@ -435,7 +457,10 @@ if __name__ == "__main__":
             # ALGO LOGIC: action logic
             with torch.no_grad():
                 current_sug_action = torch.tensor(infos.get("sug_action", [-1] * args.num_envs)).to(device)
-                action, logprob, _, value, _ = agent.get_action_and_value(next_obs, sug_action=current_sug_action)
+                action, logprob, _, value, _ = agent.get_action_and_value(
+                    next_obs,
+                    sug_action=current_sug_action
+                )
                 values[step] = value.flatten()
 
             actions[step] = action
@@ -457,8 +482,7 @@ if __name__ == "__main__":
                             avg_tons = produce_tons
                         else:
                             avg_tons = sum(produce_tons) / len(produce_tons)
-
-                        latest_produce_tons = avg_tons  # 记录产量
+                        latest_produce_tons = avg_tons
                         print(f"global_step={global_step}, episodic_return={info['episode']['r']}",
                               f"episodic_length={info['episode']['l']}, produce_tons={avg_tons}")
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
@@ -540,7 +564,7 @@ if __name__ == "__main__":
 
                 entropy_loss = entropy.mean()
 
-                # ========== 自适应教师指导系数的核心修改部分 ==========
+                # ========== 自适应教师指导系数部分 ==========
                 valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()
                 with torch.no_grad():
                     if sug_logprob is not None:
@@ -555,7 +579,6 @@ if __name__ == "__main__":
                     else:
                         c_teacher = 0.0
 
-                # 根据产量阈值 & c_teacher 确定最终 guide_coef
                 if enable_guide:
                     if latest_produce_tons >= args.teacher_acceptable_tons:
                         guide_coef = 0.0
@@ -565,14 +588,11 @@ if __name__ == "__main__":
                 else:
                     guide_coef = 0.0
 
-
-                # 计算指导损失
                 if sug_logprob is not None:
                     guide_loss = -(sug_logprob * valid_sug_mask).mean()
                 else:
                     guide_loss = 0.0
 
-                # 合并到总loss
                 loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef + guide_coef * guide_loss
 
                 optimizer.zero_grad()
