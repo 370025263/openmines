@@ -143,7 +143,7 @@ class GymMineEnv(gym.Env):
         road_n = self.load_site_n * self.dump_site_n * 2 + self.load_site_n
         site_n = self.load_site_n + self.dump_site_n
         # 观察空间：使用Dict空间来匹配原始环境的字典格式
-        self.observation_space = spaces.Box(low=0, high=np.inf, shape=(162,), dtype=np.float32)
+        self.observation_space = spaces.Box(low=0, high=np.inf, shape=(194,), dtype=np.float32)
         #
         #     (
         #     spaces.Dict({
@@ -276,7 +276,7 @@ class ThreadMineEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0,
             high=np.inf,
-            shape=(162,),
+            shape=(194,),
             dtype=np.float32
         )
 
