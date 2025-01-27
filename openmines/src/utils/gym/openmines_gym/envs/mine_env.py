@@ -31,7 +31,7 @@ def preprocess_observation(observation, max_sim_time):
         event_type = [0, 0, 1]
         action_space_n = observation['info']['load_num']
     # 2.当前订单时间绝对位置和相对位置
-    time_delta = float(observation['info']['delta_time']) / max_sim_time  # 距离上次调度的时间
+    time_delta = float(observation['info']['delta_time'])  # 距离上次调度的时间
     time_now = float(observation['info']['time']) / max_sim_time  # 当前时间(正则化）
     time_left = 1 - time_now  # 距离结束时间
     order_state = np.array([event_type[0], event_type[1], event_type[2], time_delta, time_now, time_left])
@@ -287,35 +287,80 @@ class ThreadMineEnv(gym.Env):
         self.is_running = False
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[Any, dict[str, Any]]:
-        """重置环境到初始状态"""
-        # 设置随机种子
-        super().reset(seed=seed if seed is not None else self.seed_value)
+        chosen_seed = seed if seed is not None else self.seed_value
+        # super().reset(seed=chosen_seed)
+        # np.random.seed(chosen_seed)
 
-        # 如果存在旧线程，停止它
         if self.thread and self.is_running:
             self.is_running = False
             self.thread.join()
 
-        # 创建新的通信队列
+        # 1) 随机修改充电场卡车型号数量
+        charging_site = self.config['charging_site']
+        for truck_info in charging_site["trucks"]:
+            old_count = truck_info["count"]
+            new_count = np.random.randint(1, 2 * old_count + 1)
+            truck_info["count"] = new_count
+
+        # 2) 随机调整各装载区的小铲车数量；将≥20吨的大铲车统一收集，然后随机分配到任意装载区
+        big_shovels_global = []
+        for load_site in self.config['load_sites']:
+            original_shovels = load_site['shovels']
+
+            # 分离出“小于20吨”和“大于等于20吨”
+            small_shovels = [s for s in original_shovels if s["tons"] < 20]
+            big_shovels = [s for s in original_shovels if s["tons"] >= 20]
+
+            # 随机修改小铲车数量（示例：复制第一台小铲车来凑数，也可自行改写为更复杂的逻辑）
+            if len(small_shovels) > 0:
+                old_small_count = len(small_shovels)
+                new_small_count = np.random.randint(1, 2 * old_small_count + 1)
+                chosen_shovel_config = small_shovels[0]
+                new_small_shovels = [dict(chosen_shovel_config) for _ in range(new_small_count)]
+            else:
+                new_small_shovels = []
+
+            # 收集本装载区的大铲车，放进全局列表，后面统一随机分配
+            big_shovels_global.extend(big_shovels)
+
+            # 本装载区先只保留“新小铲车”列表
+            load_site['shovels'] = new_small_shovels
+
+        # 3) 将所有≥20吨的大铲车随机分配到各装载区
+        load_sites_count = len(self.config['load_sites'])
+        for shovel in big_shovels_global:
+            idx = np.random.randint(0, load_sites_count)
+            self.config['load_sites'][idx]['shovels'].append(shovel)
+
+        # 4) 统一重命名装载区内所有铲车：名称 = “装载区名字 + -Shovel- + 序号”
+        for load_site in self.config['load_sites']:
+            for i, shovel in enumerate(load_site['shovels'], start=1):
+                shovel["name"] = f"{load_site['name']}-Shovel-{i}"
+
+        # 重置队列与线程
         self.obs_queue = Queue()
         self.act_queue = Queue()
         self.is_running = True
 
-        # 启动新的环境线程
         self.thread = threading.Thread(
             target=prepare_env,
-            args=(self.obs_queue, self.act_queue, self.config,
-                  self.config['sim_time'], self.log, self.ticks, self.seed_value)
+            args=(
+                self.obs_queue,
+                self.act_queue,
+                self.config,
+                self.config['sim_time'],
+                self.log,
+                self.ticks,
+                chosen_seed
+            )
         )
-        self.thread.daemon = True  # 设置为守护线程
+        self.thread.daemon = True
         self.thread.start()
 
-        # 获取初始观察
         out = self.obs_queue.get()
         observation = out["ob"]
         info = out["info"]
 
-        # 预处理观察
         processed_obs = preprocess_observation(observation, self.max_sim_time)
         return processed_obs, info
 

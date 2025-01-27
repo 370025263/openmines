@@ -1,4 +1,17 @@
-# docs and experiment results can be found at https://docs.cleanrl.dev/rl-algorithms/ppo/#ppopy
+# ppo_with_tuned_params.py
+# ------------------------------------------------
+# CleanRL-style PPO with custom hyperparameters
+# 由你的超参数
+# {'learning_rate': 0.0002275497790550207,
+#  'ent_coef': 0.014319441675556047,
+#  'gamma': 0.9967378999910834,
+#  'clip_coef': 0.19502127394785151,
+#  'gae_lambda': 0.9930159847502031,
+#  'update_epochs': 11,
+#  'max_grad_norm': 0.363605168165705,
+#  'hidden_size': 256}
+# 组成
+
 import os
 import random
 import time
@@ -20,91 +33,57 @@ import openmines_gym
 @dataclass
 class Args:
     exp_name: str = os.path.basename(__file__)[: -len(".py")]
-    """the name of this experiment"""
     seed: int = 1
-    """seed of the experiment"""
     torch_deterministic: bool = True
-    """if toggled, `torch.backends.cudnn.deterministic=False`"""
     cuda: bool = True
-    """if toggled, cuda will be enabled by default"""
     track: bool = False
-    """if toggled, this experiment will be tracked with Weights and Biases"""
     wandb_project_name: str = "cleanRL"
-    """the wandb's project name"""
     wandb_entity: str = None
-    """the entity (team) of wandb's project"""
     capture_video: bool = False
-    """whether to capture videos of the agent performances (check out `videos` folder)"""
 
-    # Algorithm specific arguments
-    env_id: str = "mine/Mine-v1"   # mine/Mine-v0(multiprocessing, SyncVectorEnv) mine/Mine-v1(threading, AsyncVectorEnv)
-    """the id of the environment"""
+    # Algorithm-specific arguments
+    env_id: str = "mine/Mine-v1"
     mine_config: str = "../../src/conf/north_pit_mine.json"
-    """the config file of the mine environment"""
     total_timesteps: int = 5000000
-    """total timesteps of the experiments"""
-    learning_rate: float = 2.5e-3
-    """the learning rate of the optimizer"""
-    num_envs: int = 50  # 4
-    """the number of parallel game environments"""
-    num_steps: int = 700  # 128
-    """the number of steps to run in each environment per policy rollout"""
+
+    # ------ 以下是目标超参数 ------
+    learning_rate: float = 0.0002275497790550207
+    ent_coef: float = 0.014319441675556047
+    gamma: float = 0.9967378999910834
+    clip_coef: float = 0.19502127394785151
+    gae_lambda: float = 0.9930159847502031
+    update_epochs: int = 11
+    max_grad_norm: float = 0.363605168165705
+
+    # 其余保持不变
+    num_envs: int = 50
+    num_steps: int = 700
     anneal_lr: bool = True
-    """Toggle learning rate annealing for policy and value networks"""
-    gamma: float = 0.999
-    """the discount factor gamma"""
-    gae_lambda: float = 0.95
-    """the lambda for the general advantage estimation"""
-    num_minibatches: int = 50
-    """the number of mini-batches"""
-    update_epochs: int = 12
-    """the K epochs to update the policy"""
     norm_adv: bool = True
-    """Toggles advantages normalization"""
-    clip_coef: float = 0.2
-    """the surrogate clipping coefficient"""
-    clip_vloss: bool = True
-    """Toggles whether or not to use a clipped loss for the value function, as per the paper."""
-    ent_coef: float = 0.1
-    """coefficient of the entropy"""
     vf_coef: float = 0.5
-    """coefficient of the value function"""
-    max_grad_norm: float = 0.5
-    """the maximum norm for the gradient clipping"""
-    target_kl: float = None
-    """the target KL divergence threshold"""
+    target_kl: float = 0.1
+    clip_vloss: bool = True
+    num_minibatches: int = 50
 
-    # 添加检查点相关参数
+    # checkpoint
     checkpoint_dir: str = "checkpoints"
-    """检查点保存目录"""
     save_interval: int = 100
-    """每N个iteration保存一次模型"""
     keep_checkpoint_max: int = 5
-    """保留最近的N个检查点"""
     checkpoint_path: Optional[str] = None
-    """加载特定检查点的路径"""
     save_best_only: bool = False
-    """是否只保存最佳模型"""
 
-    # 添加指导损失相关参数（原有的线性衰减参数仍保留，但不再使用）
+    # teacher guide (保留但不使用)
     guide_initial_value: float = 0.1
     guide_final_value: float = 0.0
     guide_start_decay_step: int = 3_000_000
     guide_decay_steps: int = 500_000
+    teacher_acceptable_tons: float = 11000
+    teacher_alpha: float = 0
 
-    # ====== 新增的产量阈值 + 教师权重因子 ======
-    teacher_acceptable_tons: float = 13000
-    """当 produce_tons >= 这个数值，视为模型已足够好，可将教师loss系数置 0"""
-    teacher_alpha: float = 0.5
-    """当未达标时，教师系数使用 alpha * (1 - c_teacher)"""
-
-    # to be filled in runtime
+    # runtime
     batch_size: int = 0
-    """the batch size (computed in runtime)"""
     minibatch_size: int = 0
-    """the mini-batch size (computed in runtime)"""
     num_iterations: int = 0
-    """the number of iterations (computed in runtime)"""
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -116,7 +95,6 @@ def make_env(env_id, idx, capture_video, run_name):
             env = gym.make(env_id, config_file=args.mine_config)
         env = gym.wrappers.RecordEpisodeStatistics(env)
         return env
-
     return thunk
 
 
@@ -129,31 +107,25 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
-        # 提取环境信息
         self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__()
         self.dump_sites_num = envs.env_fns[0]().config['dump_sites'].__len__()
-        # 由于装载点和卸载点数量相同，这里简单取其最大值作为动作维度
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
-        # 获取观察空间的维度（示例为 26，可根据实际情况适配）
-        self.obs_shape = 26
+        self.obs_shape = 194
+        hidden_size = 256  # 使用指定的隐藏层大小
 
-        # 共享特征提取层
         self.shared_net = nn.Sequential(
-            layer_init(nn.Linear(self.obs_shape, 64)),
+            layer_init(nn.Linear(self.obs_shape, hidden_size)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(hidden_size, hidden_size)),
             nn.Tanh()
         )
 
-        # 用一个网络来生成动作 logits（不再区分事件类型）
-        self.actor = layer_init(nn.Linear(64, self.max_action_dim), std=0.01)
-
-        # 价值网络
+        self.actor = layer_init(nn.Linear(hidden_size, self.max_action_dim), std=0.01)
         self.critic = nn.Sequential(
-            layer_init(nn.Linear(self.obs_shape, 64)),
+            layer_init(nn.Linear(self.obs_shape, hidden_size)),
             nn.Tanh(),
-            layer_init(nn.Linear(64, 64)),
+            layer_init(nn.Linear(hidden_size, 64)),
             nn.Tanh(),
             layer_init(nn.Linear(64, 1), std=1),
         )
@@ -162,99 +134,54 @@ class Agent(nn.Module):
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None, sug_action=None):
-        """
-        只使用一个 actor head。
-        如果你想根据事件类型（例如 x[:, :3] 的 one-hot）做掩码，可以在这里进行 mask 操作。
-        """
         features = self.shared_net(x)
-        logits = self.actor(features)  # shape: [batch_size, self.max_action_dim]
-
-        # ========== 如果需要根据事件类型做掩码，可参考以下示例 ==========
-        # event_types = torch.argmax(x[:, :3], dim=1)  # 假设最前面的3位为 one-hot 事件类型
-        # # 创建一个大的负值，供无效动作的 logit 使用
-        # NEG_INF = -1e8
-        # for i in range(features.shape[0]):
-        #     if event_types[i].item() == 1:
-        #         # 若 event_type=1 表示卸载, 则根据需要屏蔽掉装载动作等
-        #         # logits[i, some_mask_indices] = NEG_INF
-        #         pass
-        #     else:
-        #         # 若 event_type=0/2 表示装载, 屏蔽卸载动作
-        #         pass
-        # ========== end mask 示例 ==========
-
+        logits = self.actor(features)
         probs = Categorical(logits=logits)
+
         if action is None:
             action = probs.sample()
 
-        # value
         value = self.critic(x)
 
-        # 如果提供了教师动作 sug_action（可能为 -1 表示无效）
         sug_logprob = None
         if sug_action is not None:
             valid_mask = (sug_action >= 0)
             if valid_mask.any():
-                # 为了避免对 -1 索引报错，这里先对所有索引做 clamp
                 sug_action_clamped = torch.clamp(sug_action, min=0)
                 sug_logprob = probs.log_prob(sug_action_clamped)
-                # 对于无效部分(原始 -1)可以在外部再行处理
             else:
                 sug_logprob = None
 
-        return (
-            action,
-            probs.log_prob(action),
-            probs.entropy(),
-            value,
-            sug_logprob
-        )
+        return action, probs.log_prob(action), probs.entropy(), value, sug_logprob
 
     @property
     def device(self):
-        """获取模型所在设备"""
         return next(self.parameters()).device
 
     def save(self, path):
-        """保存模型"""
         torch.save(self.state_dict(), path)
 
     def load(self, path):
-        """加载模型"""
         self.load_state_dict(torch.load(path, map_location=self.device))
 
 
 class GuidanceDecay:
-    """
-    原先的指导系数衰减器依旧保留，但不在训练流程里实际调用。
-    示例：线性衰减
-    """
-
-    def __init__(self,
-                 initial_value: float = 0.1,
-                 final_value: float = 0.0,
-                 start_decay_step: int = 3_000_000,
-                 decay_steps: int = 500_000):
+    def __init__(self, initial_value=0.1, final_value=0.0, start_decay_step=3_000_000, decay_steps=500_000):
         self.initial_value = initial_value
         self.final_value = final_value
         self.start_decay_step = start_decay_step
         self.decay_steps = decay_steps
 
     def get_value(self, global_step: int) -> float:
-        """获取当前步骤的指导系数 (线性衰减示例)"""
         if global_step < self.start_decay_step:
             return self.initial_value
-
         if global_step >= self.start_decay_step + self.decay_steps:
             return self.final_value
-
         decay_progress = (global_step - self.start_decay_step) / self.decay_steps
         return self.initial_value + (self.final_value - self.initial_value) * decay_progress
 
 
 class CheckpointManager:
-    """检查点管理器"""
-
     def __init__(self, args: Args, exp_name: str):
         self.args = args
         self.exp_name = exp_name
@@ -269,7 +196,6 @@ class CheckpointManager:
                         reward: float,
                         is_best: bool = False,
                         additional_info: Dict = None) -> str:
-        """保存检查点"""
         checkpoint = {
             'iteration': iteration,
             'model_state_dict': agent.state_dict(),
@@ -279,7 +205,6 @@ class CheckpointManager:
             'info': additional_info or {}
         }
 
-        # 保存当前检查点
         if not self.args.save_best_only:
             checkpoint_path = os.path.join(
                 self.checkpoint_dir,
@@ -287,9 +212,8 @@ class CheckpointManager:
             )
             torch.save(checkpoint, checkpoint_path)
         else:
-            checkpoint_path = os.path.join(self.checkpoint_dir, 'best_model.pt')  # 兼容返回值
+            checkpoint_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
 
-        # 保存最佳模型
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
             torch.save(checkpoint, best_path)
@@ -302,9 +226,7 @@ class CheckpointManager:
                         agent: nn.Module,
                         optimizer: Optional[optim.Optimizer] = None,
                         path: Optional[str] = None) -> tuple:
-        """加载检查点"""
         if path is None:
-            # 尝试加载最新的检查点
             checkpoints = self._get_checkpoints()
             if not checkpoints:
                 return 0, float('-inf')
@@ -322,31 +244,29 @@ class CheckpointManager:
             return 0, float('-inf')
 
     def _cleanup_old_checkpoints(self):
-        """清理旧的检查点，只保留最近的N个"""
         if self.args.save_best_only:
             return
-
         checkpoints = self._get_checkpoints()
         if len(checkpoints) > self.args.keep_checkpoint_max:
-            for checkpoint in checkpoints[:-self.args.keep_checkpoint_max]:
-                os.remove(checkpoint)
+            for ckpt in checkpoints[:-self.args.keep_checkpoint_max]:
+                os.remove(ckpt)
 
     def _get_checkpoints(self):
-        """获取所有检查点，按迭代次数排序"""
-        checkpoints = [
-            f for f in os.listdir(self.checkpoint_dir)
-            if f.startswith('checkpoint_') and f.endswith('.pt')
-        ]
-        checkpoints = [os.path.join(self.checkpoint_dir, f) for f in checkpoints]
-        return sorted(checkpoints)
+        files = [f for f in os.listdir(self.checkpoint_dir)
+                 if f.startswith('checkpoint_') and f.endswith('.pt')]
+        files = [os.path.join(self.checkpoint_dir, f) for f in files]
+        return sorted(files)
 
 
 if __name__ == "__main__":
     args = tyro.cli(Args)
-    args.batch_size = int(args.num_envs * args.num_steps)
-    args.minibatch_size = int(args.batch_size // args.num_minibatches)
+    # compute batch sizes
+    args.batch_size = args.num_envs * args.num_steps
+    args.minibatch_size = args.batch_size // args.num_minibatches
     args.num_iterations = args.total_timesteps // args.batch_size
+
     run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+
     if args.track:
         import wandb
         wandb.init(
@@ -358,13 +278,14 @@ if __name__ == "__main__":
             monitor_gym=True,
             save_code=True,
         )
+
     writer = SummaryWriter(f"runs/{run_name}")
     writer.add_text(
         "hyperparameters",
-        "|param|value|\n|-|-|\n%s" % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
+        "|param|value|\n|-|-|\n%s"
+        % ("\n".join([f"|{key}|{value}|" for key, value in vars(args).items()])),
     )
 
-    # TRY NOT TO MODIFY: seeding
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -372,19 +293,18 @@ if __name__ == "__main__":
 
     device = torch.device("cuda" if torch.cuda.is_available() and args.cuda else "cpu")
 
-    # env setup
     envs = gym.vector.AsyncVectorEnv(
-        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)],
+        [make_env(args.env_id, i, args.capture_video, run_name) for i in range(args.num_envs)]
     )
-    assert isinstance(envs.single_action_space, gym.spaces.Discrete), "only discrete action space is supported"
+    assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
+        "only discrete action space is supported"
 
     agent = Agent(envs).to(device)
+
+    # 使用指定learning rate
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
 
-    # 创建检查点管理器
     checkpoint_manager = CheckpointManager(args, run_name)
-
-    # 原先的指南衰减器类依然保留，但不做实际调用
     guide_decay = GuidanceDecay(
         initial_value=args.guide_initial_value,
         final_value=args.guide_final_value,
@@ -392,7 +312,6 @@ if __name__ == "__main__":
         decay_steps=args.guide_decay_steps
     )
 
-    # 加载检查点(如果指定)
     start_iteration = 0
     best_reward = float('-inf')
     if args.checkpoint_path:
@@ -400,37 +319,37 @@ if __name__ == "__main__":
             agent, optimizer, args.checkpoint_path
         )
 
-    # ALGO Logic: Storage setup
     obs_shape = agent.obs_shape
-    obs = torch.zeros((args.num_steps, args.num_envs, obs_shape)).to(device)
-    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    sug_actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape).to(device)
-    logprobs = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    rewards = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    dones = torch.zeros((args.num_steps, args.num_envs)).to(device)
-    values = torch.zeros((args.num_steps, args.num_envs)).to(device)
+    obs = torch.zeros((args.num_steps, args.num_envs, obs_shape), device=device)
+    time_deltas = torch.zeros((args.num_steps, args.num_envs), device=device)
+    actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape, device=device)
+    sug_actions = torch.zeros((args.num_steps, args.num_envs) + envs.single_action_space.shape, device=device)
+    logprobs = torch.zeros((args.num_steps, args.num_envs), device=device)
+    rewards = torch.zeros((args.num_steps, args.num_envs), device=device)
+    dones = torch.zeros((args.num_steps, args.num_envs), device=device)
+    values = torch.zeros((args.num_steps, args.num_envs), device=device)
 
     global_step = 0
     start_time = time.time()
-    latest_produce_tons = 0.0  # 用于存储最近一次episode结束时的产量
+    latest_produce_tons = 0.0
 
     next_obs, infos = envs.reset(seed=args.seed)
     next_obs = torch.FloatTensor(next_obs).to(device)
-    next_done = torch.zeros(args.num_envs).to(device)
+    next_done = torch.zeros(args.num_envs, device=device)
 
-    enable_guide = True  # 是否启用教师指导
+    enable_guide = True
+
     for iteration in range(start_iteration + 1, args.num_iterations + 1):
-        # Annealing the rate if instructed to do so.
+        # 1) Learning rate annealing
         if args.anneal_lr:
             frac = 1.0 - (iteration - 1.0) / args.num_iterations
             lrnow = frac * args.learning_rate
             optimizer.param_groups[0]["lr"] = lrnow
 
-        # 保存检查点
+        # 2) rollout data collection
         if iteration % args.save_interval == 0:
             is_best = False
             current_reward = 0
-            # 在多环境场景中，可能需要自行记录最优表现，这里仅示例
             if "episode" in infos and "r" in infos["episode"]:
                 current_reward = infos["episode"]["r"]
             if current_reward > best_reward:
@@ -449,17 +368,15 @@ if __name__ == "__main__":
                 }
             )
 
-        for step in range(0, args.num_steps):
+        for step in range(args.num_steps):
             global_step += args.num_envs
             obs[step] = next_obs
             dones[step] = next_done
 
-            # ALGO LOGIC: action logic
             with torch.no_grad():
-                current_sug_action = torch.tensor(infos.get("sug_action", [-1] * args.num_envs)).to(device)
+                current_sug_action = torch.tensor(infos.get("sug_action", [-1] * args.num_envs), device=device)
                 action, logprob, _, value, _ = agent.get_action_and_value(
-                    next_obs,
-                    sug_action=current_sug_action
+                    next_obs, sug_action=current_sug_action
                 )
                 values[step] = value.flatten()
 
@@ -467,13 +384,12 @@ if __name__ == "__main__":
             logprobs[step] = logprob
             sug_actions[step] = current_sug_action
 
-            next_obs, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
-            next_done = np.logical_or(terminations, truncations)
-            rewards[step] = torch.tensor(reward).to(device).view(-1)
-            next_obs = torch.FloatTensor(next_obs).to(device)
-            next_done = torch.FloatTensor(next_done).to(device)
+            next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
+            next_obs = torch.FloatTensor(next_obs_np).to(device)
+            next_done = torch.FloatTensor(np.logical_or(terminations, truncations)).to(device)
+            rewards[step] = torch.tensor(reward, device=device).view(-1)
+            time_deltas[step] = torch.FloatTensor(next_obs_np[:, 4]).to(device)
 
-            # 如果episode结束，记录产量
             if "final_info" in infos:
                 for info in infos["final_info"]:
                     if info and "episode" in info:
@@ -483,16 +399,20 @@ if __name__ == "__main__":
                         else:
                             avg_tons = sum(produce_tons) / len(produce_tons)
                         latest_produce_tons = avg_tons
-                        print(f"global_step={global_step}, episodic_return={info['episode']['r']}",
-                              f"episodic_length={info['episode']['l']}, produce_tons={avg_tons}")
+                        print(
+                            f"global_step={global_step}, "
+                            f"episodic_return={info['episode']['r']}, "
+                            f"episodic_length={info['episode']['l']}, "
+                            f"produce_tons={avg_tons}"
+                        )
                         writer.add_scalar("charts/episodic_return", info["episode"]["r"], global_step)
                         writer.add_scalar("charts/episodic_length", info["episode"]["l"], global_step)
                         writer.add_scalar("charts/produce_tons", avg_tons, global_step)
 
-        # bootstrap value if not done
+        # 3) GAE + returns
         with torch.no_grad():
             next_value = agent.get_value(next_obs).reshape(1, -1)
-            advantages = torch.zeros_like(rewards).to(device)
+            advantages = torch.zeros_like(rewards, device=device)
             lastgaelam = 0
             for t in reversed(range(args.num_steps)):
                 if t == args.num_steps - 1:
@@ -501,11 +421,16 @@ if __name__ == "__main__":
                 else:
                     nextnonterminal = 1.0 - dones[t + 1]
                     nextvalues = values[t + 1]
-                delta = rewards[t] + args.gamma * nextvalues * nextnonterminal - values[t]
-                advantages[t] = lastgaelam = delta + args.gamma * args.gae_lambda * nextnonterminal * lastgaelam
-            returns = advantages + values
 
-        # flatten the batch
+                gamma_dt = (args.gamma ** time_deltas[t]).to(device)
+                lambda_dt = (args.gae_lambda ** time_deltas[t]).to(device)
+
+                delta = rewards[t] + gamma_dt * nextvalues * nextnonterminal - values[t]
+                advantages[t] = lastgaelam = delta + gamma_dt * lambda_dt * nextnonterminal * lastgaelam
+
+        returns = advantages + values
+
+        # 4) Flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
         b_logprobs = logprobs.reshape(-1)
         b_actions = actions.reshape((-1,) + envs.single_action_space.shape)
@@ -514,40 +439,45 @@ if __name__ == "__main__":
         b_returns = returns.reshape(-1)
         b_values = values.reshape(-1)
 
-        # Optimizing the policy and value network
+        # 5) Policy & value update
         b_inds = np.arange(args.batch_size)
         clipfracs = []
-
         for epoch in range(args.update_epochs):
             np.random.shuffle(b_inds)
             for start in range(0, args.batch_size, args.minibatch_size):
                 end = start + args.minibatch_size
                 mb_inds = b_inds[start:end]
 
-                _, newlogprob, entropy, newvalue, sug_logprob = agent.get_action_and_value(
+                (
+                    _,
+                    newlogprob,
+                    entropy,
+                    newvalue,
+                    sug_logprob,
+                ) = agent.get_action_and_value(
                     b_obs[mb_inds],
                     b_actions.long()[mb_inds],
                     b_sug_actions.long()[mb_inds]
                 )
+
                 logratio = newlogprob - b_logprobs[mb_inds]
                 ratio = logratio.exp()
 
                 with torch.no_grad():
-                    # KL metrics
                     old_approx_kl = (-logratio).mean()
                     approx_kl = ((ratio - 1) - logratio).mean()
                     clipfracs += [((ratio - 1.0).abs() > args.clip_coef).float().mean().item()]
 
-                mb_advantages = b_advantages[mb_inds]
+                mb_adv = b_advantages[mb_inds]
                 if args.norm_adv:
-                    mb_advantages = (mb_advantages - mb_advantages.mean()) / (mb_advantages.std() + 1e-8)
+                    mb_adv = (mb_adv - mb_adv.mean()) / (mb_adv.std() + 1e-8)
 
-                # Policy loss
-                pg_loss1 = -mb_advantages * ratio
-                pg_loss2 = -mb_advantages * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
+                # policy loss
+                pg_loss1 = -mb_adv * ratio
+                pg_loss2 = -mb_adv * torch.clamp(ratio, 1 - args.clip_coef, 1 + args.clip_coef)
                 pg_loss = torch.max(pg_loss1, pg_loss2).mean()
 
-                # Value loss
+                # value loss
                 newvalue = newvalue.view(-1)
                 if args.clip_vloss:
                     v_loss_unclipped = (newvalue - b_returns[mb_inds]) ** 2
@@ -564,11 +494,10 @@ if __name__ == "__main__":
 
                 entropy_loss = entropy.mean()
 
-                # ========== 自适应教师指导系数部分 ==========
+                # teacher guidance (保留可用)
                 valid_sug_mask = (b_sug_actions[mb_inds] >= 0).float()
                 with torch.no_grad():
                     if sug_logprob is not None:
-                        # 计算 c_teacher: 在本 mini-batch 上对教师动作的平均概率
                         probs = torch.exp(sug_logprob) * valid_sug_mask
                         sum_probs = probs.sum()
                         valid_count = valid_sug_mask.sum()
@@ -579,21 +508,20 @@ if __name__ == "__main__":
                     else:
                         c_teacher = 0.0
 
+                guide_coef = 0.0
                 if enable_guide:
                     if latest_produce_tons >= args.teacher_acceptable_tons:
                         guide_coef = 0.0
-                        enable_guide = False  # 达标后不再启用教师指导
+                        enable_guide = False
                     else:
                         guide_coef = args.teacher_alpha * (1.0 - c_teacher)
-                else:
-                    guide_coef = 0.0
 
                 if sug_logprob is not None:
                     guide_loss = -(sug_logprob * valid_sug_mask).mean()
                 else:
                     guide_loss = 0.0
 
-                loss = pg_loss - args.ent_coef * entropy_loss + v_loss * args.vf_coef + guide_coef * guide_loss
+                loss = pg_loss - args.ent_coef * entropy_loss + args.vf_coef * v_loss + guide_coef * guide_loss
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -603,11 +531,14 @@ if __name__ == "__main__":
             if args.target_kl is not None and approx_kl > args.target_kl:
                 break
 
-        y_pred, y_true = b_values.cpu().numpy(), b_returns.cpu().numpy()
-        var_y = np.var(y_true)
-        explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
+        # 6) logging
+        explained_var = 0.0
+        with torch.no_grad():
+            y_pred = b_values.cpu().numpy()
+            y_true = b_returns.cpu().numpy()
+            var_y = np.var(y_true)
+            explained_var = np.nan if var_y == 0 else 1 - np.var(y_true - y_pred) / var_y
 
-        # TRY NOT TO MODIFY: record rewards for plotting purposes
         writer.add_scalar("charts/learning_rate", optimizer.param_groups[0]["lr"], global_step)
         writer.add_scalar("losses/value_loss", v_loss.item(), global_step)
         writer.add_scalar("losses/policy_loss", pg_loss.item(), global_step)
@@ -617,17 +548,17 @@ if __name__ == "__main__":
         writer.add_scalar("losses/clipfrac", np.mean(clipfracs), global_step)
         writer.add_scalar("losses/explained_variance", explained_var, global_step)
 
-        # 记录 guide_loss 和 guide_coef 方便观察
         if isinstance(guide_loss, torch.Tensor):
             writer.add_scalar("losses/guide_loss", guide_loss.item(), global_step)
         else:
             writer.add_scalar("losses/guide_loss", 0.0, global_step)
         writer.add_scalar("charts/guide_coef", guide_coef, global_step)
 
-        print("SPS:", int(global_step / (time.time() - start_time)))
-        writer.add_scalar("charts/SPS", int(global_step / (time.time() - start_time)), global_step)
+        sps = int(global_step / (time.time() - start_time))
+        print(f"SPS: {sps}")
+        writer.add_scalar("charts/SPS", sps, global_step)
 
-    # 保存最终模型
+    # 最后保存
     checkpoint_manager.save_checkpoint(
         agent,
         optimizer,
