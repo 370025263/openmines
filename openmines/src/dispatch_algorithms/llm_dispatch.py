@@ -1,19 +1,53 @@
 from __future__ import annotations
 import numpy as np  # 导入NumPy库
-import random,json,time
+import random, json, time
 import openai
-
 
 from openmines.src.dispatcher import BaseDispatcher
 from openmines.src.load_site import LoadSite, Shovel
 from openmines.src.dump_site import DumpSite, Dumper
 
 
-class LLMDispatcher(BaseDispatcher):
+def serialize_distances_compact(road_matrix, charging_to_load):
+    """
+    序列化路网距离信息，包含从充电区到装载区和装载区到卸载区以及反向的距离矩阵。
+    信息尽量简约高效。
+
+    Args:
+        road_matrix (list of list of float): 装载区到卸载区的距离矩阵。
+        charging_to_load (list of float): 充电区到装载区的距离列表。
+
+    Returns:
+        str: 序列化的路网距离信息。
+    """
+    # 简洁序列化充电区到装载区
+    charging_to_load_text = ", ".join(f"{dist:.2f}" for dist in charging_to_load)
+
+    # 简洁序列化装载区到卸载区
+    load_to_unload_text = "\n".join(
+        f"Load {i + 1} -> [{', '.join(f'{dist:.2f}' for dist in row)}]"
+        for i, row in enumerate(road_matrix)
+    )
+
+    # 简洁序列化卸载区到装载区（转置矩阵）
+    unload_to_load_matrix = list(zip(*road_matrix))
+    unload_to_load_text = "\n".join(
+        f"Unload {i + 1} -> [{', '.join(f'{dist:.2f}' for dist in col)}]"
+        for i, col in enumerate(unload_to_load_matrix)
+    )
+
+    return (
+        f"Charging to Load Sites: [{charging_to_load_text}]\n\n"
+        f"Load Sites to Unload Sites:\n{load_to_unload_text}\n\n"
+        f"Unload Sites to Load Sites:\n{unload_to_load_text}"
+    )
+
+
+class PureLLMDispatcher(BaseDispatcher):
     def __init__(self):
         super().__init__()
-        self.name = "LLMDispatcher"
-        self.OPENAI = OPENAI(model_name="deepseek-chat")
+        self.name = "PureLLMDispatcher"
+        self.OPENAI = OPENAI(model_name="deepseek-reasoner")
         self.order_index = 0
         self.init_order_index = 0
         self.common_order_index = 0
@@ -25,11 +59,12 @@ class LLMDispatcher(BaseDispatcher):
 
     def give_init_order(self, truck: "Truck", mine: "Mine") -> int:
         # logger
-        self.logger = mine.global_logger.get_logger("LLMDispatcher")
+        self.logger = mine.global_logger.get_logger("PureLLMDispatcher")
         cur_location = mine.charging_site.name
         # 统计loadsite信息
         load_sites = mine.load_sites
-        loadsite_queue_length = [load_site.parking_lot.queue_status["total"][int(mine.env.now)] for load_site in load_sites]
+        loadsite_queue_length = [load_site.parking_lot.queue_status["total"][int(mine.env.now)] for load_site in
+                                 load_sites]
         estimated_loadsite_queue_wait_times = [load_site.estimated_queue_wait_time for load_site in load_sites]
 
         # 获取dumpsite信息
@@ -55,17 +90,18 @@ class LLMDispatcher(BaseDispatcher):
                     If a road has a large number of mining trucks dispatched, the probability of random events such as traffic jams and road repairs increases, leading to longer operation times for the trucks.
 
                 Current mine information:
-                        Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": loadsite.load_site_productivity, "distance": mine.road.charging_to_load[i],
+                        Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": round(loadsite.load_site_productivity, 2), "distance(km)": mine.road.charging_to_load[i],
                                           "queue_length": loadsite_queue_length[i],
-                                          "estimated_queue_wait_times": estimated_loadsite_queue_wait_times[i]
+                                          "estimated_queue_wait_times(min)": estimated_loadsite_queue_wait_times[i], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
+                                          "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
                                           } for i, loadsite in enumerate(mine.load_sites)]},
 
                         Current road information:
                             {[{"road_id": f"{cur_location} to {load_site.name}", "road_desc": f"from {cur_location} to {load_site.name}", "distance": mine.road.charging_to_load[j],
                                "trucks_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_count"],
-                               "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_jam_count"],
+                               "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_jam_count"],
                                "is_road_in_repair": mine.road.road_status[(cur_location, load_site.name)]["repair_count"]} for j, load_site in enumerate(mine.load_sites)]}
-
+                            {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
 
                 Current order information:
                 {{
@@ -81,7 +117,7 @@ class LLMDispatcher(BaseDispatcher):
 
                 Please assign an initial task destination for the current truck based on the above information,
                 Requirements:
-                1. Overall objective: Considering the impact of random events on the road, choose the loading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                1. Overall objective: Considering the impact of random events on the road, choose the loading area to maximize the produce_tons, while avoiding traffic jams, shovel repairs and over-queued trucks.
                 2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
                 {{
                     "truck_name": "{truck.name}",
@@ -93,7 +129,7 @@ class LLMDispatcher(BaseDispatcher):
         for i in range(3):
             try:
                 response = self.OPENAI.get_response(prompt=prompt)
-                self.logger.info(f"LLM 订单{self.order_index +1 }：prompt:{prompt} \n {response}")
+                self.logger.info(f"LLM 订单{self.order_index + 1}：prompt:{prompt} \n {response}")
                 start = response.find('{')
                 end = response.rfind('}') + 1
                 # 提取 JSON 字符串
@@ -105,8 +141,7 @@ class LLMDispatcher(BaseDispatcher):
             except Exception as e:
                 print(e)
                 loadsite_index = random.randint(0, len(mine.load_sites) - 1)
-                self.logger.error(f"LLM 订单{self.order_index +1 }：parse error，giving random order")
-
+                self.logger.error(f"LLM 订单{self.order_index + 1}：parse error，giving random order")
 
         # logging
         order = {
@@ -127,27 +162,31 @@ class LLMDispatcher(BaseDispatcher):
 
     def give_haul_order(self, truck: "Truck", mine: "Mine") -> int:
         # logger
-        self.logger = mine.global_logger.get_logger("LLMDispatcher")
+        self.logger = mine.global_logger.get_logger("PureLLMDispatcher")
         # 获取当前卡车信息
         truck_load = truck.truck_load
         cur_location = truck.current_location.name
         cur_loadsite = mine.get_dest_obj_by_name(cur_location)
         cur_loadsite_index = mine.load_sites.index(cur_loadsite)
-        assert isinstance(cur_loadsite, LoadSite), f"the truck {truck.name} is not in a loadsite, it is in {cur_loadsite.name}"
+        assert isinstance(cur_loadsite,
+                          LoadSite), f"the truck {truck.name} is not in a loadsite, it is in {cur_loadsite.name}"
         # 统计loadsite信息
         load_sites = mine.load_sites
-        loadsite_queue_length = [load_site.parking_lot.queue_status["total"][int(mine.env.now)] for load_site in load_sites]
+        loadsite_queue_length = [load_site.parking_lot.queue_status["total"][int(mine.env.now)] for load_site in
+                                 load_sites]
         estimated_loadsite_queue_wait_times = [load_site.estimated_queue_wait_time for load_site in load_sites]
 
         # 获取dumpsite信息
         avaliable_dumpsites = [dumpsite for dumpsite in mine.dump_sites if dumpsite.parking_lot is not None]
         dump_site_names = [dumpsite.name for dumpsite in avaliable_dumpsites]
-        dumpsite_queue_length = [dumpsite.parking_lot.queue_status["total"][int(mine.env.now)] for dumpsite in avaliable_dumpsites]
+        dumpsite_queue_length = [dumpsite.parking_lot.queue_status["total"][int(mine.env.now)] for dumpsite in
+                                 avaliable_dumpsites]
         estimated_dumpsite_queue_wait_times = [dumpsite.estimated_queue_wait_time for dumpsite in avaliable_dumpsites]
 
         # 获取过去的订单信息
         # past_orders_all = self.order_history[-10:]
-        past_orders_haul = [order for order in self.order_history if order["order_type"] == "haul_order"][-10:]
+        past_orders_haul = [order for order in self.order_history if
+                            order["order_type"] in ["back_order", "haul_order"]][-20:]
         # 获取Road距离信息
         road_matrix = mine.road.road_matrix
 
@@ -160,7 +199,14 @@ class LLMDispatcher(BaseDispatcher):
                 If a road has many mining trucks, the probability of random events such as traffic jams and road maintenance increases, leading to longer operation times for the trucks.
 
                 Current mine information:
-                Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": loadsite.load_site_productivity, "queue_length": loadsite_queue_length[i]
+                    Mine: {{
+                    "produce_tons": {mine.produce_tons},
+                    "cur_time": {mine.env.now},
+                    "dump_count": {mine.service_count},
+                    }}
+
+                Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": round(loadsite.load_site_productivity), "queue_length": loadsite_queue_length[i], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
+                                  "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
                                   } for i, loadsite in enumerate(mine.load_sites)]},
                 Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": j, "distance": road_matrix[cur_loadsite_index][j],
                                     "queue_length": dumpsite_queue_length[j]
@@ -168,9 +214,9 @@ class LLMDispatcher(BaseDispatcher):
                 Current road information:
                     {[{"road_id": f"{cur_location} to {dumpsite.name}", "road_desc": f"from {cur_location} to {dumpsite.name}", "distance": road_matrix[cur_loadsite_index][j],
                        "trucks_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_count"],
-                       "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_jam_count"],
+                       "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_jam_count"],
                        "is_road_in_repair": mine.road.road_status[(cur_location, dumpsite.name)]["repair_count"]} for j, dumpsite in enumerate(avaliable_dumpsites)]}
-
+                    {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
                 Historical scheduling decisions:
                     {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_haul]}
 
@@ -187,7 +233,7 @@ class LLMDispatcher(BaseDispatcher):
 
                 Please assign a suitable unloading area as the target location for the current truck based on the information above, allowing it to reach the target location as quickly as possible for unloading:
                 Requirements:
-                1. Overall objective: Considering the impact of random events on the road, choose the unloading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                1. Overall objective: Considering the impact of random events on the road, choose the unloading area to maximize the produce_tons, while avoiding traffic jams, shovel repairs and over-queued trucks.
                 2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
                 {{
                     "truck_name": "{truck.name}",
@@ -230,10 +276,9 @@ class LLMDispatcher(BaseDispatcher):
         self.logger.debug(f"LLM HAUL 订单{self.order_index}：{order}")
         return dumpsite_index
 
-
     def give_back_order(self, truck: "Truck", mine: "Mine") -> int:
         # logger
-        self.logger = mine.global_logger.get_logger("LLMDispatcher")
+        self.logger = mine.global_logger.get_logger("PureLLMDispatcher")
         # 获取当前卡车信息
         truck_load = truck.truck_load
         cur_location = truck.current_location.name
@@ -259,7 +304,8 @@ class LLMDispatcher(BaseDispatcher):
         road_matrix = mine.road.road_matrix
 
         # 历史
-        past_orders_back = [order for order in self.order_history if order["order_type"] == "back_order"][-10:]
+        past_orders_back = [order for order in self.order_history if
+                            order["order_type"] in ["back_order", "haul_order"]][-20:]
 
         prompt = f"""
                     You are now an LLM scheduler, and your task is to assign the current truck a task to return to the loading area.
@@ -270,18 +316,26 @@ class LLMDispatcher(BaseDispatcher):
                     If a road has many mining trucks, the probability of random events like traffic jams and road maintenance increases, leading to longer operation times for the trucks.
 
                     Current mine information:
+                    Mine: {{
+                    "produce_tons": {mine.produce_tons},
+                    "cur_time": {mine.env.now},
+                    "dump_count": {mine.service_count},
+                    }}
+
                     Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": i, "queue_length": dumpsite_queue_length[i]
                                         } for i, dumpsite in enumerate(mine.dump_sites)]},
-                    Loading areas: {[{"name": loadsite.name, "type": "loadsite", "index": j, "distance": road_matrix[j][cur_dumpsite_index],
-                                      "queue_length": loadsite_queue_length[j]
+                    Loading areas: {[{"name": loadsite.name, "type": "loadsite", "index": j, "distance": road_matrix[j][cur_dumpsite_index], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
+                                      "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
+                                      "queue_length": loadsite_queue_length[j],
+                                      "estimated_queue_wait_times(min)": estimated_loadsite_queue_wait_times[j],
                                       } for j, loadsite in enumerate(avaliable_loadsites)]},
                     Current road information:
                           {[{"road_id": f"{cur_location} to {loadsite.name}", "road_desc": f"from {cur_location} to {loadsite.name}", "distance": road_matrix[j][cur_dumpsite_index],
                              "trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_count"],
-                             "jammed_trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_jam_count"],
+                             "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_jam_count"],
                              "is_road_in_repair": mine.road.road_status[(cur_location, loadsite.name)]["repair_count"]}
                             for j, loadsite in enumerate(avaliable_loadsites)]}
-
+                            {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
                     Historical scheduling decisions:
                             {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_back]}
 
@@ -298,7 +352,7 @@ class LLMDispatcher(BaseDispatcher):
 
                     Please assign a suitable loading area as the target location for the current truck based on the information above, allowing it to return as quickly as possible for loading:
                     Requirements:
-                        1. Overall objective: Considering the impact of random events on the road, choose the loading area with the shortest distance as much as possible, while avoiding traffic jams and road repairs.
+                        1. Overall objective: Considering the impact of random events on the road, choose the loading area to maximize the produce_tons, while avoiding traffic jams, shovel repairs and over-queued trucks.
                         2. Finally, based on the overall objective, directly provide the following JSON string as the decision result:
                     {{
                         "truck_name": "{truck.name}",
@@ -345,13 +399,14 @@ class OPENAI:
         self.api_base = "OPENAI BASE HERE"  # you can choose custom api base, like:"https://api.qaqgpt.com/v1"
         self.model_name = model_name
         self.load_model()
+
     def load_model(self):
         openai.api_key = self.api_key
         openai.api_base = self.api_base
 
     def get_response(self, prompt):
-        message =  [
-                    {"role": "user", "content": prompt}]
+        message = [
+            {"role": "user", "content": prompt}]
         # time.sleep(1)
         response = openai.ChatCompletion.create(model=self.model_name, messages=message)
         for re in response["choices"]:
@@ -360,9 +415,9 @@ class OPENAI:
 
 
 if __name__ == "__main__":
-    dispatcher = LLMDispatcher()
-    print(dispatcher.give_init_order(1,2))
-    print(dispatcher.give_haul_order(1,2))
-    print(dispatcher.give_back_order(1,2))
+    dispatcher = PureLLMDispatcher()
+    print(dispatcher.give_init_order(1, 2))
+    print(dispatcher.give_haul_order(1, 2))
+    print(dispatcher.give_back_order(1, 2))
 
-    print(dispatcher.total_order_count,dispatcher.init_order_count)
+    print(dispatcher.total_order_count, dispatcher.init_order_count)

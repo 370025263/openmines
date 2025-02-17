@@ -286,58 +286,67 @@ class ThreadMineEnv(gym.Env):
         self.thread = None
         self.is_running = False
 
-    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None) -> tuple[Any, dict[str, Any]]:
-        chosen_seed = seed if seed is not None else self.seed_value
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None, full_random:bool = False) -> tuple[Any, dict[str, Any]]:
+        # 如果你有自己的种子逻辑
+        # chosen_seed = seed if seed is not None else self.seed_value
         # super().reset(seed=chosen_seed)
         # np.random.seed(chosen_seed)
 
         if self.thread and self.is_running:
             self.is_running = False
             self.thread.join()
+        if full_random:
+            # 1) 随机修改充电场卡车型号数量
+            charging_site = self.config['charging_site']
+            for truck_info in charging_site["trucks"]:
+                old_count = truck_info["count"]
+                new_count = np.random.randint(1, 2 * old_count + 1)  # 1 ~ 2*old_count 范围
+                truck_info["count"] = new_count
 
-        # 1) 随机修改充电场卡车型号数量
-        charging_site = self.config['charging_site']
-        for truck_info in charging_site["trucks"]:
-            old_count = truck_info["count"]
-            new_count = np.random.randint(1, 2 * old_count + 1)
-            truck_info["count"] = new_count
+            # 2) 随机调整各装载区的小铲车数量；将 ≥20 吨的大铲车统一收集，然后随机分配到任意装载区
+            big_shovels_global = []
+            for load_site in self.config['load_sites']:
+                original_shovels = load_site['shovels']
 
-        # 2) 随机调整各装载区的小铲车数量；将≥20吨的大铲车统一收集，然后随机分配到任意装载区
-        big_shovels_global = []
-        for load_site in self.config['load_sites']:
-            original_shovels = load_site['shovels']
+                # 分离出“小于20吨”和“大于等于20吨”
+                small_shovels = [s for s in original_shovels if s["tons"] < 20]
+                big_shovels = [s for s in original_shovels if s["tons"] >= 20]
 
-            # 分离出“小于20吨”和“大于等于20吨”
-            small_shovels = [s for s in original_shovels if s["tons"] < 20]
-            big_shovels = [s for s in original_shovels if s["tons"] >= 20]
+                # 随机修改“小铲车”数量，但保证至少有 1 台
+                if len(small_shovels) > 0:
+                    old_small_count = len(small_shovels)
+                    # 保证每个装载区至少生成 1 台小铲车
+                    new_small_count = np.random.randint(1, 2 * old_small_count + 1)
+                    chosen_shovel_config = small_shovels[0]
+                    new_small_shovels = [dict(chosen_shovel_config) for _ in range(new_small_count)]
+                else:
+                    # 如果原来就没有小铲车，那就给它造一个默认的小铲车，保证至少有 1 台
+                    default_small_shovel = {
+                        "name": "Default-Small-Shovel",
+                        "tons": 2.25,
+                        "cycle_time": 1,
+                        "position_offset": [0.1, 0.0],
+                    }
+                    new_small_shovels = [default_small_shovel]
 
-            # 随机修改小铲车数量（示例：复制第一台小铲车来凑数，也可自行改写为更复杂的逻辑）
-            if len(small_shovels) > 0:
-                old_small_count = len(small_shovels)
-                new_small_count = np.random.randint(1, 2 * old_small_count + 1)
-                chosen_shovel_config = small_shovels[0]
-                new_small_shovels = [dict(chosen_shovel_config) for _ in range(new_small_count)]
-            else:
-                new_small_shovels = []
+                # 收集本装载区的大铲车，放进全局列表，后面统一随机分配
+                big_shovels_global.extend(big_shovels)
 
-            # 收集本装载区的大铲车，放进全局列表，后面统一随机分配
-            big_shovels_global.extend(big_shovels)
+                # 本装载区先只保留“新小铲车”列表
+                load_site['shovels'] = new_small_shovels
 
-            # 本装载区先只保留“新小铲车”列表
-            load_site['shovels'] = new_small_shovels
+            # 3) 将所有 ≥20 吨的大铲车随机分配到各装载区
+            load_sites_count = len(self.config['load_sites'])
+            for shovel in big_shovels_global:
+                idx = np.random.randint(0, load_sites_count)
+                self.config['load_sites'][idx]['shovels'].append(shovel)
 
-        # 3) 将所有≥20吨的大铲车随机分配到各装载区
-        load_sites_count = len(self.config['load_sites'])
-        for shovel in big_shovels_global:
-            idx = np.random.randint(0, load_sites_count)
-            self.config['load_sites'][idx]['shovels'].append(shovel)
+            # 4) 统一重命名装载区内所有铲车：名称 = “装载区名字 + -Shovel- + 序号”
+            for load_site in self.config['load_sites']:
+                for i, shovel in enumerate(load_site['shovels'], start=1):
+                    shovel["name"] = f"{load_site['name']}-Shovel-{i}"
 
-        # 4) 统一重命名装载区内所有铲车：名称 = “装载区名字 + -Shovel- + 序号”
-        for load_site in self.config['load_sites']:
-            for i, shovel in enumerate(load_site['shovels'], start=1):
-                shovel["name"] = f"{load_site['name']}-Shovel-{i}"
-
-        # 重置队列与线程
+        # 重置线程相关
         self.obs_queue = Queue()
         self.act_queue = Queue()
         self.is_running = True
@@ -351,7 +360,7 @@ class ThreadMineEnv(gym.Env):
                 self.config['sim_time'],
                 self.log,
                 self.ticks,
-                chosen_seed
+                None
             )
         )
         self.thread.daemon = True

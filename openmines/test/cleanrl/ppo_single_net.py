@@ -1,3 +1,4 @@
+# ppo_single_dt.py
 # ppo_with_tuned_params.py
 # ------------------------------------------------
 # CleanRL-style PPO with custom hyperparameters
@@ -57,13 +58,13 @@ class Args:
 
     # 其余保持不变
     num_envs: int = 50
-    num_steps: int = 700
+    num_steps: int = 1400
     anneal_lr: bool = True
     norm_adv: bool = True
     vf_coef: float = 0.5
-    target_kl: float = 0.1
+    target_kl: float = None # 防止训练不稳定
     clip_vloss: bool = True
-    num_minibatches: int = 50
+    num_minibatches: int = 100
 
     # checkpoint
     checkpoint_dir: str = "checkpoints"
@@ -71,19 +72,24 @@ class Args:
     keep_checkpoint_max: int = 5
     checkpoint_path: Optional[str] = None
     save_best_only: bool = False
+    save_best_only_params: bool = True # 只保存best model的参数
 
     # teacher guide (保留但不使用)
     guide_initial_value: float = 0.1
     guide_final_value: float = 0.0
     guide_start_decay_step: int = 3_000_000
     guide_decay_steps: int = 500_000
-    teacher_acceptable_tons: float = 11000
-    teacher_alpha: float = 0
+    teacher_acceptable_tons: float = 12000
+    teacher_alpha: float = 0 #0.5
 
     # runtime
     batch_size: int = 0
     minibatch_size: int = 0
     num_iterations: int = 0
+
+    # 添加网络宽度参数
+    hidden_size: int = 256
+    """neural network hidden size"""
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -107,27 +113,27 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 class Agent(nn.Module):
     def __init__(self, envs):
         super().__init__()
-        self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__()
-        self.dump_sites_num = envs.env_fns[0]().config['dump_sites'].__len__()
+        self.load_sites_num = envs.env_fns[0]().config['load_sites'].__len__() if envs else 5
+        self.dump_sites_num = envs.env_fns[0]().config['dump_sites'].__len__() if envs else 5
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
         self.obs_shape = 194
-        hidden_size = 256  # 使用指定的隐藏层大小
+        hidden_size = args.hidden_size  # 使用配置的隐藏层大小
 
         self.shared_net = nn.Sequential(
             layer_init(nn.Linear(self.obs_shape, hidden_size)),
-            nn.Tanh(),
+            nn.ReLU(),
             layer_init(nn.Linear(hidden_size, hidden_size)),
-            nn.Tanh()
+            nn.ReLU()
         )
 
         self.actor = layer_init(nn.Linear(hidden_size, self.max_action_dim), std=0.01)
         self.critic = nn.Sequential(
             layer_init(nn.Linear(self.obs_shape, hidden_size)),
-            nn.Tanh(),
-            layer_init(nn.Linear(hidden_size, 64)),
-            nn.Tanh(),
-            layer_init(nn.Linear(64, 1), std=1),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, hidden_size)),
+            nn.ReLU(),
+            layer_init(nn.Linear(hidden_size, 1), std=1),
         )
 
     def get_value(self, x):
@@ -216,7 +222,10 @@ class CheckpointManager:
 
         if is_best:
             best_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
-            torch.save(checkpoint, best_path)
+            if self.args.save_best_only_params: # 只保存参数
+                torch.save(agent.state_dict(), best_path)
+            else: # 保存完整checkpoint
+                torch.save(checkpoint, best_path)
             print(f"New best model saved with reward: {reward:.2f}")
 
         self._cleanup_old_checkpoints()
@@ -265,7 +274,20 @@ if __name__ == "__main__":
     args.minibatch_size = args.batch_size // args.num_minibatches
     args.num_iterations = args.total_timesteps // args.batch_size
 
-    run_name = f"{args.env_id}__{args.exp_name}__{args.seed}__{int(time.time())}"
+    run_name = f"{args.env_id}__{args.exp_name}__"\
+               f"s{args.seed}__"\
+               f"lr{args.learning_rate:.2e}__"\
+               f"e{args.ent_coef:.2e}__"\
+               f"g{args.gamma:.3f}__"\
+               f"c{args.clip_coef:.2f}__"\
+               f"l{args.gae_lambda:.3f}__"\
+               f"ep{args.update_epochs}__"\
+               f"gr{args.max_grad_norm:.2f}__"\
+               f"hs{args.hidden_size}__"\
+               f"ns{args.num_steps}__"\
+               f"ne{args.num_envs}__"\
+               f"mb{args.num_minibatches}__"\
+               f"t{int(time.time())}"
 
     if args.track:
         import wandb
@@ -333,7 +355,8 @@ if __name__ == "__main__":
     start_time = time.time()
     latest_produce_tons = 0.0
 
-    next_obs, infos = envs.reset(seed=args.seed)
+    env_seeds = [random.randint(0, 2 ** 31 - 1) for _ in range(args.num_envs)]
+    next_obs, infos = envs.reset(seed=env_seeds)
     next_obs = torch.FloatTensor(next_obs).to(device)
     next_done = torch.zeros(args.num_envs, device=device)
 
@@ -347,15 +370,16 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         # 2) rollout data collection
-        if iteration % args.save_interval == 0:
-            is_best = False
-            current_reward = 0
-            if "episode" in infos and "r" in infos["episode"]:
-                current_reward = infos["episode"]["r"]
-            if current_reward > best_reward:
-                best_reward = current_reward
-                is_best = True
+        # if iteration % args.save_interval == 0: # 移除save_interval条件限制
+        is_best = False
+        current_reward = 0
+        if "episode" in infos and "r" in infos["episode"]:
+            current_reward = infos["episode"]["r"]
+        if current_reward > best_reward:
+            best_reward = current_reward
+            is_best = True
 
+        if iteration % args.save_interval == 0 or is_best: # 周期性checkpoint和best model checkpoint都保存
             checkpoint_manager.save_checkpoint(
                 agent,
                 optimizer,
