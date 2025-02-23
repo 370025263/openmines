@@ -137,8 +137,10 @@ class StrategyOptimizer:
                         LoadSite包含多个Shovel对象，DumpSite包含多个Dumper对象。
                         卡车开始时从充电站出发前往装载点装载矿石(init订单)，然后运输到卸载点卸载（haul订单），然后再前往装载点(back订单）。
                         调度算法类需要实现give_init_order, give_haul_order, give_back_order三个方法。
-                        道路Road对象包含道路矩阵road_matrix和充电站到装载点的道路矩阵charging_to_load_road_matrix，道路被抽象为矩阵。
-                        road_matrix[i][j]表示从装载点i到卸载区j的距离，charging_to_load_road_matrix[i]表示从充电站到装载点i的距离。
+                        道路Road对象包含道路矩阵l2d_road_matrix、d2l_road_matrix和充电站到装载点的道路矩阵charging_to_load_road_matrix。
+                        l2d_road_matrix[i][j]表示从装载点i到卸载区j的距离，
+                        d2l_road_matrix[i][j]表示从卸载区i到装载点j的距离，
+                        charging_to_load_road_matrix[i]表示从充电站到装载点i的距离。
                         调度算法需要根据Mine对象(包含上述所有对象）和truck对象决策出init, haul, back订单（动作空间为装载区、卸载区、装载区）。
                     对象信息接口介绍：
                         Mine对象(openmines.src.mine.Mine)
@@ -190,8 +192,9 @@ class StrategyOptimizer:
                             dumper_tons:float, # 已卸载吨数
                             service_count, # 服务次数
                         Road对象(openmines.src.road.Road)
-                            包含road_matrix:np.ndarray, # 道路矩阵
-                            charging_to_load_road_matrix:List[float], # 充电站到装载点的距离
+                            包含l2d_road_matrix:np.ndarray, # 装载点到卸载点的距离矩阵
+                            d2l_road_matrix:np.ndarray, # 卸载点到装载点的距离矩阵
+                            charging_to_load_road_matrix:List[float], # 充电站到装载点的距离列表
                             road_repairs:Dict[Tuple[Union[LoadSite, DumpSite], Union[LoadSite, DumpSite]], Tuple[bool, float]], # 道路维修状态字典,key为(起点,终点)元组,value为(是否在维修,预期修复完成时间)
                             truck_on_road(self, start:Union[LoadSite, DumpSite], end:Union[LoadSite, DumpSite])->List["Truck"] # 获取在道路上的卡车列表
                             
@@ -231,8 +234,10 @@ class StrategyOptimizer:
         LoadSite包含多个Shovel对象，DumpSite包含多个Dumper对象。
         卡车开始时从充电站出发前往装载点装载矿石(init订单)，然后运输到卸载点卸载（haul订单），然后再前往装载点(back订单）。
         调度算法类需要实现give_init_order, give_haul_order, give_back_order三个方法。
-        道路Road对象包含道路矩阵road_matrix和充电站到装载点的道路矩阵charging_to_load_road_matrix，道路被抽象为矩阵。
-        road_matrix[i][j]表示从装载点i到卸载区j的距离，charging_to_load_road_matrix[i]表示从充电站到装载点i的距离。
+        道路Road对象包含道路矩阵l2d_road_matrix、d2l_road_matrix和充电站到装载点的道路矩阵charging_to_load_road_matrix。
+        l2d_road_matrix[i][j]表示从装载点i到卸载区j的距离，
+        d2l_road_matrix[i][j]表示从卸载区i到装载点j的距离，
+        charging_to_load_road_matrix[i]表示从充电站到装载点i的距离。
         调度算法需要根据Mine对象(包含上述所有对象）和truck对象决策出init, haul, back订单（动作空间为装载区、卸载区、装载区）。
 Mine对象(openmines.src.mine.Mine)
     包含load_sites:List[LoadSite],
@@ -283,8 +288,9 @@ Dumper对象(openmines.src.dump_site.Dumper)
     dumper_tons:float, # 已卸载吨数
     service_count, # 服务次数
 Road对象(openmines.src.road.Road)
-    包含road_matrix:np.ndarray, # 道路矩阵
-    charging_to_load_road_matrix:List[float], # 充电站到装载点的距离
+    包含l2d_road_matrix:np.ndarray, # 装载点到卸载点的距离矩阵
+    d2l_road_matrix:np.ndarray, # 卸载点到装载点的距离矩阵
+    charging_to_load_road_matrix:List[float], # 充电站到装载点的距离列表
     road_repairs:Dict[Tuple[Union[LoadSite, DumpSite], Union[LoadSite, DumpSite]], Tuple[bool, float]], # 道路维修状态字典,key为(起点,终点)元组,value为(是否在维修,预期修复完成时间)
     truck_on_road(self, start:Union[LoadSite, DumpSite], end:Union[LoadSite, DumpSite])->List["Truck"] # 获取在道路上的卡车列表
     

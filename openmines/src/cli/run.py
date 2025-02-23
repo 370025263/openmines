@@ -86,11 +86,13 @@ def run_dispatch_sim(dispatcher: BaseDispatcher, config_file):
         mine.add_dump_site(dump_site)
 
     # 初始化道路
-    road_matrix = np.array(config['road']['road_matrix'])
+    l2d_road_matrix = np.array(config['road']['l2d_road_matrix'])
+    d2l_road_matrix = np.array(config['road']['d2l_road_matrix'])
     road_event_params = config['road'].get('road_event_params', {})  # 从配置中加载道路事件参数
 
     charging_to_load_road_matrix = config['road']['charging_to_load_road_matrix']
-    road = Road(road_matrix=road_matrix, charging_to_load_road_matrix=charging_to_load_road_matrix,
+    road = Road(l2d_road_matrix=l2d_road_matrix, d2l_road_matrix=d2l_road_matrix, 
+                charging_to_load_road_matrix=charging_to_load_road_matrix,
                 road_event_params=road_event_params)
     # # 添加充电站和装载区卸载区
     mine.add_road(road)

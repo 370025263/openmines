@@ -14,7 +14,8 @@ from matplotlib.font_manager import FontProperties
 # 定义字体属性
 legend_font = FontProperties(family='Times New Roman', size=8)
 if platform.system() == 'Darwin':  # macOS
-    plt.rcParams['font.family'] = 'PingFang HK'
+    pass
+    #plt.rcParams['font.family'] = 'PingFang HK'
 elif platform.system() == 'Windows':  # Windows
     plt.rcParams['font.family'] = 'SimHei'  # 常用的中文字体之一
 else:  # Linux or others

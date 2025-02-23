@@ -495,7 +495,7 @@ class RLDispatcher(BaseDispatcher):
                 cur_road_status["load2dump"]["repair_count"][(i, j)] = \
                 mine.road.road_status[(load_site_name, dump_site_name)][
                     "repair_count"]
-                cur_road_status["load2dump"]["distances"][(i, j)] = mine.road.road_matrix[i][j]
+                cur_road_status["load2dump"]["distances"][(i, j)] = mine.road.l2d_road_matrix[i][j]
 
         ## 统计unhaul过程中的道路情况
         for j in range(mine.road.dump_site_num):
@@ -511,7 +511,7 @@ class RLDispatcher(BaseDispatcher):
                 cur_road_status["dump2load"]["repair_count"][(i, j)] = \
                 mine.road.road_status[(dump_site_name, load_site_name)][
                     "repair_count"]
-                cur_road_status["dump2load"]["distances"][(i, j)] = mine.road.road_matrix[j][i]
+                cur_road_status["dump2load"]["distances"][(i, j)] = mine.road.d2l_road_matrix[i][j]
         # One-hot encoding
         for road_id in range(mine.road.load_site_num):
             cur_road_status["oh_truck_count"].append(cur_road_status["charging2load"]["truck_count"][road_id])

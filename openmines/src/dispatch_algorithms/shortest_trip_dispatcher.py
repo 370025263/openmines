@@ -38,7 +38,7 @@ class ShortestTripDispatcher(BaseDispatcher):
         cur_index = mine.load_sites.index(current_location)  # 获取当前位置的index
 
         # 获取当前位置到所有dump site的距离
-        cur_to_dump:np.array = mine.road.road_matrix[cur_index,:]
+        cur_to_dump:np.array = mine.road.l2d_road_matrix[cur_index,:]
 
         # 计算车辆抵达各卸载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
         reach_dump_time = now_time + 60*cur_to_dump / avg_velocity
@@ -63,7 +63,7 @@ class ShortestTripDispatcher(BaseDispatcher):
         cur_index = mine.dump_sites.index(current_location)
 
         # 获取当前位置到所有装载点的距离
-        cur_to_load = mine.road.road_matrix[:,cur_index]
+        cur_to_load = mine.road.d2l_road_matrix[:,cur_index]
 
         # 计算车辆抵达各装载点时间(now_time 为当前仿真时间:Float, avg_velocity 为车辆平均配速:Float)
         reach_load_time = now_time + 60*cur_to_load / avg_velocity

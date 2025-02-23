@@ -11,14 +11,27 @@ from openmines.src.utils.event import Event
 
 
 class Road:
-    # 目前，Road本质是一个二维数组
-    # 以后可能会添加SUMO的路网
-    # 根本作用是用于仿真订单到达时间
-    def __init__(self, road_matrix: np.ndarray, charging_to_load_road_matrix: list[float], road_event_params=None):
-        self.road_matrix: np.ndarray = road_matrix
-        self.load_site_num: int = road_matrix.shape[0]
-        self.dump_site_num: int = road_matrix.shape[1]
-        self.charging_to_load: list = charging_to_load_road_matrix
+    """
+    道路类，包含三个主要的距离矩阵：
+    - l2d_road_matrix: 装载点到卸载点的距离矩阵，l2d_road_matrix[i][j]表示从装载点i到卸载区j的距离
+    - d2l_road_matrix: 卸载点到装载点的距离矩阵，d2l_road_matrix[i][j]表示从卸载区i到装载点j的距离
+    - charging_to_load_road_matrix: 充电站到装载点的距离列表，charging_to_load_road_matrix[i]表示从充电站到装载点i的距离
+    """
+    def __init__(self, l2d_road_matrix: np.ndarray, d2l_road_matrix: np.ndarray, charging_to_load_road_matrix: list[float], road_event_params=None):
+        """
+        初始化道路对象
+        
+        Args:
+            l2d_road_matrix (np.ndarray): 装载点到卸载点的距离矩阵
+            d2l_road_matrix (np.ndarray): 卸载点到装载点的距离矩阵
+            charging_to_load_road_matrix (list[float]): 充电站到装载点的距离列表
+            road_event_params (dict, optional): 道路事件参数
+        """
+        self.l2d_road_matrix: np.ndarray = l2d_road_matrix  # 装载点到卸载点的距离矩阵
+        self.d2l_road_matrix: np.ndarray = d2l_road_matrix  # 卸载点到装载点的距离矩阵
+        self.load_site_num: int = l2d_road_matrix.shape[0]  # 装载点数量
+        self.dump_site_num: int = l2d_road_matrix.shape[1]  # 卸载点数量
+        self.charging_to_load: list = charging_to_load_road_matrix  # 充电站到装载点的距离列表
         self.road_status = None
         # 默认参数
         default_params = {
@@ -145,10 +158,10 @@ class Road:
         truck_positions = [truck.journey_coverage for truck in trucks_on_road]
 
         # ------------------------
-        # (1) 先决定“要不要堵车”
+        # (1) 先决定"要不要堵车"
         # ------------------------
 
-        jam_lambda = 0.05  # 可自己调节大小(越大表示路上车辆对“触发堵车”的影响越显著)
+        jam_lambda = 0.05  # 可自己调节大小(越大表示路上车辆对"触发堵车"的影响越显著)
         N = len(trucks_on_road)
         # 整体堵车概率: 车辆越多则越大
         jam_chance = 1.0 - math.exp(-jam_lambda * N)
@@ -159,17 +172,17 @@ class Road:
             pass
         elif len(trucks_on_road) == 1:
             # print(f"Trucks on road from {start.name} to {end.name}: {len(trucks_on_road)}")
-            # 如果你仍想“单车就不堵”，可以直接 return
+            # 如果你仍想"单车就不堵"，可以直接 return
             return
 
-        # 如果“这一次”没抽中堵车，直接退出
+        # 如果"这一次"没抽中堵车，直接退出
         if random.random() >= jam_chance:
             return
 
         # ------------------------
         # (2) 已判定要堵车 -> 再采样堵车位置
         # ------------------------
-        sd = 0.1  # 每辆卡车生成的“影响分布”标准差
+        sd = 0.1  # 每辆卡车生成的"影响分布"标准差
 
         x = np.linspace(0, 1, 1000)
         total_prob = np.zeros_like(x)
@@ -179,7 +192,7 @@ class Road:
             prob = norm.pdf(x, position, sd)
             total_prob += prob
 
-        # 这里的 total_prob 只是用来选“拥堵发生位置”，所以先做归一化
+        # 这里的 total_prob 只是用来选"拥堵发生位置"，所以先做归一化
         total_prob_sum = np.sum(total_prob)
         if total_prob_sum <= 1e-12:
             return  # 极端情况下，直接不产生事件
@@ -269,6 +282,22 @@ class Road:
         return in_repair
 
     def get_distance(self, truck: "Truck", target_site, enable_event:bool=True) -> float:
+        """
+        获取从当前位置到目标位置的距离
+        
+        根据当前位置和目标位置的类型，从相应的距离矩阵中获取距离：
+        - 从卸载点到装载点：使用d2l_road_matrix
+        - 从装载点到卸载点：使用l2d_road_matrix
+        - 从充电站到装载点：使用charging_to_load_road_matrix
+        
+        Args:
+            truck (Truck): 卡车对象
+            target_site: 目标位置
+            enable_event (bool): 是否启用道路事件
+            
+        Returns:
+            float: 路径距离
+        """
         current_site = truck.current_location
         assert type(current_site) != type(target_site), f"current_site and target_site should not be the same type of site " \
                                                         f"current_site: {current_site.name}, target_site: {target_site.name},Truck name: {truck.name}"
@@ -284,11 +313,11 @@ class Road:
             # 取得标号
             load_site_id = self.mine.load_sites.index(target_site)
             dump_site_id = self.mine.dump_sites.index(current_site)
-            distance = self.road_matrix[load_site_id][dump_site_id]
+            distance = self.d2l_road_matrix[load_site_id][dump_site_id]
         elif isinstance(current_site, LoadSite):
             load_site_id = self.mine.load_sites.index(current_site)
             dump_site_id = self.mine.dump_sites.index(target_site)
-            distance = self.road_matrix[load_site_id][dump_site_id]
+            distance = self.l2d_road_matrix[load_site_id][dump_site_id]
         elif isinstance(current_site, ChargingSite):
             load_site_id = self.mine.load_sites.index(target_site)
             distance = self.charging_to_load[load_site_id]

@@ -8,38 +8,35 @@ from openmines.src.load_site import LoadSite, Shovel
 from openmines.src.dump_site import DumpSite, Dumper
 
 
-def serialize_distances_compact(road_matrix, charging_to_load):
+def serialize_distances_compact(l2d_road_matrix, d2l_road_matrix, charging_to_load):
     """
-    序列化路网距离信息，包含从充电区到装载区和装载区到卸载区以及反向的距离矩阵。
-    信息尽量简约高效。
-
-    Args:
-        road_matrix (list of list of float): 装载区到卸载区的距离矩阵。
-        charging_to_load (list of float): 充电区到装载区的距离列表。
-
-    Returns:
-        str: 序列化的路网距离信息。
+    序列化路网距离信息，包含三个主要距离矩阵：
+    - 从充电区到装载区的距离列表
+    - 从装载区到卸载区的距离矩阵 (l2d_road_matrix[i][j]表示从装载点i到卸载点j的距离)
+    - 从卸载区到装载区的距离矩阵 (d2l_road_matrix[i][j]表示从卸载点j到装载点i的距离)
+    注意：
+    - l2d_road_matrix: [装载点索引][卸载点索引]
+    - d2l_road_matrix: [装载点索引][卸载点索引] (其中[i][j]表示从卸载点j到装载点i的距离)
     """
     # 简洁序列化充电区到装载区
     charging_to_load_text = ", ".join(f"{dist:.2f}" for dist in charging_to_load)
 
-    # 简洁序列化装载区到卸载区
+    # 简洁序列化装载区到卸载区，注意标明方向
     load_to_unload_text = "\n".join(
-        f"Load {i + 1} -> [{', '.join(f'{dist:.2f}' for dist in row)}]"
-        for i, row in enumerate(road_matrix)
+        f"From Load {i + 1} -> Unload Sites: [{', '.join(f'{dist:.2f}' for dist in row)}]"
+        for i, row in enumerate(l2d_road_matrix)
     )
 
-    # 简洁序列化卸载区到装载区（转置矩阵）
-    unload_to_load_matrix = list(zip(*road_matrix))
+    # 简洁序列化卸载区到装载区，注意标明方向和索引含义
     unload_to_load_text = "\n".join(
-        f"Unload {i + 1} -> [{', '.join(f'{dist:.2f}' for dist in col)}]"
-        for i, col in enumerate(unload_to_load_matrix)
+        f"To Load {i + 1} <- From Unload Sites: [{', '.join(f'{dist:.2f}' for dist in row)}]"
+        for i, row in enumerate(d2l_road_matrix)
     )
 
     return (
-        f"Charging to Load Sites: [{charging_to_load_text}]\n\n"
-        f"Load Sites to Unload Sites:\n{load_to_unload_text}\n\n"
-        f"Unload Sites to Load Sites:\n{unload_to_load_text}"
+        f"Charging to Load Sites Distances: [{charging_to_load_text}]\n\n"
+        f"Load Sites to Unload Sites Distances (l2d_matrix[i][j] means distance from Load i to Unload j):\n{load_to_unload_text}\n\n"
+        f"Unload Sites to Load Sites Distances (d2l_matrix[i][j] means distance from Unload j to Load i):\n{unload_to_load_text}"
     )
 
 
@@ -78,7 +75,9 @@ class PureLLMDispatcher(BaseDispatcher):
         past_orders_all = self.order_history[-10:]
         past_orders_haul = [order for order in self.order_history if order["order_type"] == "haul_order"][-10:]
         # 获取Road距离信息
-        road_matrix = mine.road.road_matrix
+        l2d_road_matrix = mine.road.l2d_road_matrix
+        d2l_road_matrix = mine.road.d2l_road_matrix
+        charging_to_load = mine.road.charging_to_load
 
         prompt = f"""
                 You are now an LLM (Large Language Model) scheduler, and your task is to assign an initial task destination for the current truck based on the available information.
@@ -90,18 +89,18 @@ class PureLLMDispatcher(BaseDispatcher):
                     If a road has a large number of mining trucks dispatched, the probability of random events such as traffic jams and road repairs increases, leading to longer operation times for the trucks.
 
                 Current mine information:
-                        Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": round(loadsite.load_site_productivity, 2), "distance(km)": mine.road.charging_to_load[i],
+                        Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": round(loadsite.load_site_productivity, 2), "distance(km)": charging_to_load[i],
                                           "queue_length": loadsite_queue_length[i],
                                           "estimated_queue_wait_times(min)": estimated_loadsite_queue_wait_times[i], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
                                           "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
                                           } for i, loadsite in enumerate(mine.load_sites)]},
 
                         Current road information:
-                            {[{"road_id": f"{cur_location} to {load_site.name}", "road_desc": f"from {cur_location} to {load_site.name}", "distance": mine.road.charging_to_load[j],
+                            {[{"road_id": f"{cur_location} to {load_site.name}", "road_desc": f"from {cur_location} to {load_site.name}", "distance": charging_to_load[j],
                                "trucks_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_count"],
                                "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, load_site.name)]["truck_jam_count"],
                                "is_road_in_repair": mine.road.road_status[(cur_location, load_site.name)]["repair_count"]} for j, load_site in enumerate(mine.load_sites)]}
-                            {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
+                            {serialize_distances_compact(l2d_road_matrix, d2l_road_matrix, charging_to_load)}
 
                 Current order information:
                 {{
@@ -188,7 +187,9 @@ class PureLLMDispatcher(BaseDispatcher):
         past_orders_haul = [order for order in self.order_history if
                             order["order_type"] in ["back_order", "haul_order"]][-20:]
         # 获取Road距离信息
-        road_matrix = mine.road.road_matrix
+        l2d_road_matrix = mine.road.l2d_road_matrix
+        d2l_road_matrix = mine.road.d2l_road_matrix
+        charging_to_load = mine.road.charging_to_load
 
         prompt = f"""
                 You are now an LLM scheduler, and your task is to assign a target location for the current truck based on the available information.
@@ -208,15 +209,15 @@ class PureLLMDispatcher(BaseDispatcher):
                 Loading areas: {[{"name": loadsite.name, "type": "loadsite", "load_capability(tons/min)": round(loadsite.load_site_productivity), "queue_length": loadsite_queue_length[i], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
                                   "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
                                   } for i, loadsite in enumerate(mine.load_sites)]},
-                Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": j, "distance": road_matrix[cur_loadsite_index][j],
+                Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": j, "distance": l2d_road_matrix[cur_loadsite_index][j],
                                     "queue_length": dumpsite_queue_length[j]
                                     } for j, dumpsite in enumerate(avaliable_dumpsites)]},
                 Current road information:
-                    {[{"road_id": f"{cur_location} to {dumpsite.name}", "road_desc": f"from {cur_location} to {dumpsite.name}", "distance": road_matrix[cur_loadsite_index][j],
+                    {[{"road_id": f"{cur_location} to {dumpsite.name}", "road_desc": f"from {cur_location} to {dumpsite.name}", "distance": l2d_road_matrix[cur_loadsite_index][j],
                        "trucks_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_count"],
                        "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, dumpsite.name)]["truck_jam_count"],
                        "is_road_in_repair": mine.road.road_status[(cur_location, dumpsite.name)]["repair_count"]} for j, dumpsite in enumerate(avaliable_dumpsites)]}
-                    {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
+                    {serialize_distances_compact(l2d_road_matrix, d2l_road_matrix, charging_to_load)}
                 Historical scheduling decisions:
                     {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_haul]}
 
@@ -301,7 +302,9 @@ class PureLLMDispatcher(BaseDispatcher):
         estimated_loadsite_queue_wait_times = [loadsite.estimated_queue_wait_time for loadsite in avaliable_loadsites]
 
         # 获取Road距离信息
-        road_matrix = mine.road.road_matrix
+        l2d_road_matrix = mine.road.l2d_road_matrix
+        d2l_road_matrix = mine.road.d2l_road_matrix
+        charging_to_load = mine.road.charging_to_load
 
         # 历史
         past_orders_back = [order for order in self.order_history if
@@ -324,18 +327,18 @@ class PureLLMDispatcher(BaseDispatcher):
 
                     Unloading areas: {[{"name": dumpsite.name, "type": "dumpsite", "index": i, "queue_length": dumpsite_queue_length[i]
                                         } for i, dumpsite in enumerate(mine.dump_sites)]},
-                    Loading areas: {[{"name": loadsite.name, "type": "loadsite", "index": j, "distance": road_matrix[j][cur_dumpsite_index], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
+                    Loading areas: {[{"name": loadsite.name, "type": "loadsite", "index": j, "distance": d2l_road_matrix[j][cur_dumpsite_index], "is_shovels_repair(not available)": [shovel.repair for shovel in loadsite.shovel_list],
                                       "shovel_productivity(tons/min)": [round(shovel.shovel_tons / shovel.shovel_cycle_time, 2) for shovel in loadsite.shovel_list],
                                       "queue_length": loadsite_queue_length[j],
                                       "estimated_queue_wait_times(min)": estimated_loadsite_queue_wait_times[j],
                                       } for j, loadsite in enumerate(avaliable_loadsites)]},
                     Current road information:
-                          {[{"road_id": f"{cur_location} to {loadsite.name}", "road_desc": f"from {cur_location} to {loadsite.name}", "distance": road_matrix[j][cur_dumpsite_index],
+                          {[{"road_id": f"{cur_location} to {loadsite.name}", "road_desc": f"from {cur_location} to {loadsite.name}", "distance": d2l_road_matrix[j][cur_dumpsite_index],
                              "trucks_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_count"],
                              "cur_truck_jam_event_on_this_road": mine.road.road_status[(cur_location, loadsite.name)]["truck_jam_count"],
                              "is_road_in_repair": mine.road.road_status[(cur_location, loadsite.name)]["repair_count"]}
                             for j, loadsite in enumerate(avaliable_loadsites)]}
-                            {serialize_distances_compact(road_matrix, mine.road.charging_to_load)}
+                            {serialize_distances_compact(l2d_road_matrix, d2l_road_matrix, charging_to_load)}
                     Historical scheduling decisions:
                             {[{key: val for key, val in order.items() if key not in ['prompt', 'response']} for order in past_orders_back]}
 
