@@ -4,14 +4,18 @@ import pathlib
 import sys
 import pkgutil
 import importlib
-from datetime import time
+import time
+import re
+import os
 
 import numpy as np
 import pandas as pd
 from matplotlib import pyplot as plt
+from rich.console import Console
 
 from openmines.src.utils.visualization.charter import Charter
 from openmines.src.utils.visualization.graphher import VisualGrapher
+from openmines.src.utils.analyzer import LogAnalyzer
 
 # add the openmines package to the path
 sys.path.append(str(pathlib.Path(__file__).parent.parent.parent.parent.absolute()))
@@ -355,6 +359,72 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
     c.draw_algo_based_fleet_ablation_experiment(scenes_data, baseline, target)
     c.save_ablation(tag="algo_ablation")
 
+def run_analysis(log_path, dispatcher_name=None):
+    """运行日志分析"""
+    console = Console()
+    try:
+        # 检查路径是否存在
+        path = pathlib.Path(log_path)
+        if not path.exists():
+            console.print(f"[bold red]错误: 路径 {log_path} 不存在[/bold red]")
+            return
+
+        # 如果是目录，分析最新的日志文件
+        if path.is_dir():
+            log_files = list(path.glob("*.log"))
+            if not log_files:
+                console.print(f"[bold red]错误: 目录 {log_path} 中没有找到日志文件[/bold red]")
+                return
+            # 按修改时间排序，取最新的
+            latest_log = max(log_files, key=lambda x: x.stat().st_mtime)
+            log_path = str(latest_log)
+            console.print(f"[bold blue]分析最新的日志文件: {latest_log.name}[/bold blue]")
+        
+        # 初始化分析器
+        analyzer = LogAnalyzer(
+            api_key="sk-whknzqhqufnsnfrjtrofqmlyuxhaobawmdtfhpuvyctaoblr",
+            model_name="deepseek-ai/DeepSeek-V3"
+        )
+        
+        if dispatcher_name:
+            analyzer.dispatcher_name = dispatcher_name
+            
+        # 运行分析
+        analysis_result = analyzer.analyze_logs(log_path)
+        
+        # 如果分析结果为空（可能是因为未找到指定的dispatcher），则直接返回
+        if not analysis_result:
+            return
+            
+        # 获取当前时间字符串
+        current_time = time.strftime("%Y-%m-%d-%H-%M-%S", time.localtime())
+        
+        # 从日志文件名中提取仿真时间
+        sim_time_match = re.search(r'sim_(\d{4}-\d{2}-\d{2}-\d{2}-\d{2}-\d{2})', os.path.basename(log_path))
+        sim_time = sim_time_match.group(1) if sim_time_match else "unknown_sim_time"
+        
+        # 构造输出文件名
+        if dispatcher_name:
+            output_filename = f"analysis_report_{dispatcher_name}_{sim_time}_analyzed_{current_time}.md"
+        else:
+            output_filename = f"analysis_report_all_{sim_time}_analyzed_{current_time}.md"
+        
+        # 保存结果到当前工作目录
+        output_file = pathlib.Path.cwd() / output_filename
+        with open(output_file, "w", encoding="utf-8") as f:
+            f.write("# 矿山卡车调度分析报告\n\n")
+            f.write(f"- 分析时间: {current_time}\n")
+            f.write(f"- 仿真时间: {sim_time}\n")
+            if dispatcher_name:
+                f.write(f"- 调度算法: {dispatcher_name}\n")
+            f.write("\n---\n\n")
+            f.write(analysis_result)
+        
+        console.print(f"[bold green]✓ 分析完成，结果已保存至 {output_file}[/bold green]")
+        
+    except Exception as e:
+        console.print(f"[bold red]错误: {str(e)}[/bold red]")
+
 def main():
     parser = argparse.ArgumentParser(description='Run a dispatch simulation of a mine with your DISPATCH algorithm and MINE config file')
     subparsers = parser.add_subparsers(help='commands', dest='command')
@@ -393,8 +463,30 @@ def main():
     algo_based_fleet_ablation_parser.add_argument('-M', '--max', type=str, required=False, help='Maximum value of the truck number',
                                                   default=160)
 
+    # 添加分析命令的两种方式
+    parser.add_argument('-a', '--analyze', type=str, help='Analyze log file or directory')
+    
+    # 作为子命令
+    analyze_parser = subparsers.add_parser('analyze', help='Analyze simulation logs')
+    analyze_parser.add_argument('log_path', type=str, help='Path to the log file or directory')
+    analyze_parser.add_argument('-d', '--dispatcher', type=str, 
+                               help='Specify dispatcher name explicitly')
 
     args = parser.parse_args()
+    
+    # 处理分析命令
+    if args.analyze is not None:
+        # 安全获取dispatcher参数
+        dispatcher_name = getattr(args, 'dispatcher', None)
+        run_analysis(args.analyze, dispatcher_name)
+        return
+        
+    # 检查子命令
+    if args.command == 'analyze':
+        dispatcher_name = getattr(args, 'dispatcher', None)
+        run_analysis(args.log_path, dispatcher_name)
+        return
+        
     # 如command为空，那么检查f/v参数是否存在，如果不存在则print help；如果存在f/v参数则执行run/visualize
     if args.command is None:
         if args.config_file is None and args.tick_file is None:

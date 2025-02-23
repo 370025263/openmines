@@ -351,7 +351,7 @@ class Mine:
         assert len(self.trucks) > 0, "trucks can not be empty"
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
-        self.mine_logger.info("simulation started")
+        self.mine_logger.info(f"simulation started with dispatcher {self.dispatcher.__class__.__name__}")
 
         # start some monitor process for summary
         for load_site in self.load_sites:
@@ -389,7 +389,7 @@ class Mine:
             self.env.process(truck.run())
 
         self.env.run(until=total_time)
-        self.mine_logger.info("simulation finished")
+        self.mine_logger.info(f"simulation finished with dispatcher {self.dispatcher.__class__.__name__}")
         self.summary()
         ticks = self.dump_frames(total_time=total_time)
         return ticks
