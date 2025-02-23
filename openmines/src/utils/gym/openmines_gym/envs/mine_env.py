@@ -111,7 +111,7 @@ def preprocess_observation(observation, max_sim_time):
     assert not np.isnan(time_delta), f"NaN detected in time_delta: {time_delta}"
     assert not np.isnan(time_now), f"NaN detected in time_now: {time_now}"
 
-    return state
+    return state.astype(np.float32)
 
 
 class GymMineEnv(gym.Env):
