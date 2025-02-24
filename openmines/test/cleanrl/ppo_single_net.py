@@ -95,6 +95,9 @@ class Args:
     hidden_size: int = 256
     """neural network hidden size"""
 
+    r_mode: str = "reward_norm"  # 可选: "reward_norm", "return_norm", "none"
+    """正则化模式选择: reward_norm - 使用预计算的统计值正则化reward, return_norm - 对每个batch的returns进行在线正则化"""
+
 
 def make_env(env_id, idx, capture_video, run_name):
     def thunk():
@@ -179,7 +182,9 @@ class Agent(nn.Module):
     
     def normalize_reward(self, reward):
         """对奖励进行正则化"""
-        return (reward - self.reward_mean) / self.reward_std
+        if args.r_mode == "reward_norm":  # 只在reward_norm模式下进行正则化
+            return (reward - self.reward_mean) / self.reward_std
+        return reward  # 其他模式返回原始reward
     
     def denormalize_reward(self, normalized_reward):
         """将正则化的奖励转换回原始尺度"""
@@ -338,6 +343,7 @@ if __name__ == "__main__":
                f"ns{args.num_steps}__"\
                f"ne{args.num_envs}__"\
                f"mb{args.num_minibatches}__"\
+               f"rm{args.r_mode}__"\
                f"t{int(time.time())}"
 
     if args.track:
@@ -482,8 +488,7 @@ if __name__ == "__main__":
             
             # 对奖励进行正则化
             reward_tensor = torch.tensor(reward, device=device).view(-1)
-            normalized_reward = agent.normalize_reward(reward_tensor)
-            rewards[step] = normalized_reward
+            rewards[step] = agent.normalize_reward(reward_tensor)  # 根据模式决定是否正则化
             
             time_deltas[step] = torch.FloatTensor(next_obs_np[:, 4]).to(device)
 
@@ -552,6 +557,22 @@ if __name__ == "__main__":
                 advantages[t] = lastgaelam = delta + gamma_dt * lambda_dt * nextnonterminal * lastgaelam
 
         returns = advantages + values
+
+        # 如果使用return normalization,对整个batch的returns进行正则化
+        if args.r_mode == "return_norm":
+            returns_mean = returns.mean()
+            returns_std = returns.std(unbiased=False)
+            returns = (returns - returns_mean) / (returns_std + 1e-8)
+
+        # 记录日志时区分两种模式
+        writer.add_scalar(f"charts/episodic_return_{args.r_mode}", raw_episode_reward, global_step)
+        if args.r_mode == "reward_norm":
+            normalized_reward = agent.normalize_reward(torch.tensor(raw_episode_reward, device=device))
+            writer.add_scalar("charts/episodic_return_normalized_reward", normalized_reward, global_step)
+        elif args.r_mode == "return_norm":
+            # 只记录returns的统计信息,不记录normalized reward
+            writer.add_scalar("charts/returns_mean", returns_mean.item(), global_step)
+            writer.add_scalar("charts/returns_std", returns_std.item(), global_step)
 
         # 4) Flatten the batch
         b_obs = obs.reshape((-1,) + envs.single_observation_space.shape)
