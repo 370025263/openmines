@@ -16,18 +16,32 @@ from openmines.src.dump_site import DumpSite
 from openmines.src.load_site import LoadSite
 from openmines.src.truck import Truck
 from openmines.src.mine import Mine
-from openmines.src.dispatch_algorithms.fixed_group_dispatch import FixedGroupDispatcher
-from openmines.src.dispatch_algorithms.shortest_trip_dispatcher import ShortestTripDispatcher
 
+# 删除所有具体dispatcher的import，改用动态导入
+import importlib
 
 # 全局队列和锁，确保多个进程间的数据不会混淆
 class RLDispatcher(BaseDispatcher):
-    def __init__(self):
+    def __init__(self, sug_dispatcher:str):
         """
         初始化RLDispatcher实例。
         """
         super().__init__()
         self.name = "RLDispatcher"
+        self.sug_dispatcher = sug_dispatcher
+        # 动态导入dispatcher类
+        try:
+            def camel_to_snake(name):
+                import re
+                # 在大写字母前添加下划线，并转换为小写
+                name = re.sub('(.)([A-Z][a-z]+)', r'\1_\2', name)
+                name = re.sub('([a-z0-9])([A-Z])', r'\1_\2', name)
+                return name.lower()
+            module = importlib.import_module("openmines.src.dispatch_algorithms." + camel_to_snake(sug_dispatcher))
+            self.dispatcher_cls = getattr(module, sug_dispatcher)
+        except (ImportError, AttributeError) as e:
+            raise ImportError(f"Cannot import dispatcher class {sug_dispatcher}: {str(e)}")
+            
         self.current_observation = None
         self.obs_queue = Queue()
         self.act_queue = Queue()
@@ -148,9 +162,12 @@ class RLDispatcher(BaseDispatcher):
 
     def _get_dispatch_action(self, truck: Truck, mine: Mine) -> int:
         """
+        使用指定的调度器获取建议动作
         """
-        # use group dispatch reward
-        dispatch = ShortestTripDispatcher()
+        # 实例化指定的调度器
+        dispatch = self.dispatcher_cls()
+        
+        # 根据当前位置调用对应的决策方法
         if isinstance(truck.current_location, DumpSite):
             decision = dispatch.give_back_order(truck, mine)
         elif isinstance(truck.current_location, ChargingSite):

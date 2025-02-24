@@ -18,6 +18,7 @@ import random
 import time
 from dataclasses import dataclass
 from typing import Optional, Dict
+import json
 
 import gymnasium as gym
 import numpy as np
@@ -30,6 +31,9 @@ from torch.utils.tensorboard import SummaryWriter
 
 import openmines_gym
 
+# 加载正则化参数
+with open("./normalization_params.json", "r") as f:
+    normalization_params = json.load(f)
 
 @dataclass
 class Args:
@@ -44,7 +48,7 @@ class Args:
 
     # Algorithm-specific arguments
     env_id: str = "mine/Mine-v1"
-    mine_config: str = "/home/weiyu/stone/openmines_project/openmines/openmines/src/conf/north_pit_mine.json"
+    mine_config: str = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/openmines/src/conf/north_pit_mine.json"
     total_timesteps: int = 10000000
 
     # ------ 以下是目标超参数 ------
@@ -57,7 +61,7 @@ class Args:
     max_grad_norm: float = 0.363605168165705
 
     # 其余保持不变
-    num_envs: int = 50
+    num_envs: int = 5
     num_steps: int = 1400
     anneal_lr: bool = True
     norm_adv: bool = True
@@ -118,7 +122,15 @@ class Agent(nn.Module):
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
         self.obs_shape = 194
-        hidden_size = args.hidden_size  # 使用配置的隐藏层大小
+        # 添加维度检查
+        assert len(normalization_params["mean"]) == self.obs_shape, \
+            f"Normalization mean dimension {len(normalization_params['mean'])} " \
+            f"does not match obs_shape {self.obs_shape}"
+        assert len(normalization_params["std"]) == self.obs_shape, \
+            f"Normalization std dimension {len(normalization_params['std'])} " \
+            f"does not match obs_shape {self.obs_shape}"
+
+        hidden_size = args.hidden_size
 
         self.shared_net = nn.Sequential(
             layer_init(nn.Linear(self.obs_shape, hidden_size)),
@@ -138,10 +150,28 @@ class Agent(nn.Module):
             layer_init(nn.Linear(hidden_size, 1), std=1),
         )
 
+        # 添加正则化参数
+        self.register_buffer(
+            "obs_mean",
+            torch.tensor(normalization_params["mean"], dtype=torch.float32)
+        )
+        self.register_buffer(
+            "obs_std", 
+            torch.tensor(normalization_params["std"], dtype=torch.float32)
+        )
+        # 为了数值稳定性,将过小的std设置为1
+        self.obs_std[self.obs_std < 1e-5] = 1.0
+
+    def normalize_obs(self, obs):
+        """对观察值进行正则化"""
+        return (obs - self.obs_mean) / self.obs_std
+
     def get_value(self, x):
+        x = self.normalize_obs(x)
         return self.critic(x)
 
     def get_action_and_value(self, x, action=None, sug_action=None):
+        x = self.normalize_obs(x)
         features = self.shared_net(x)
         logits = self.actor(features)
         probs = Categorical(logits=logits)

@@ -39,7 +39,7 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # log_path 为cwd下的logs文件夹
     log_path = pathlib.Path.cwd() / 'logs'
     # dispatcher
-    dispatcher = RLDispatcher()
+    dispatcher = RLDispatcher(sug_dispatcher=config['sug_dispatcher'])
     # 初始化矿山
     mine = Mine(config['mine']['name'], log_path=log_path,
                 log_file_level=logging.DEBUG if log else logging.ERROR,
@@ -91,12 +91,12 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # 从配置中加载道路距离矩阵
     l2d_road_matrix = np.array(config['road']['l2d_road_matrix'])  # 装载点到卸载点的距离矩阵
     d2l_road_matrix = np.array(config['road']['d2l_road_matrix'])  # 卸载点到装载点的距离矩阵
-    charging_to_load = config['road']['charging_to_load']  # 充电区到装载点的距离列表
+    charging_to_load = config['road']['charging_to_load_road_matrix']  # 充电区到装载点的距离列表
     road_event_params = config['road'].get('road_event_params', {})  # 从配置中加载道路事件参数
 
     road = Road(l2d_road_matrix=l2d_road_matrix, 
                d2l_road_matrix=d2l_road_matrix,
-               charging_to_load=charging_to_load,
+               charging_to_load_road_matrix=charging_to_load,
                road_event_params=road_event_params)
     # # 添加充电站和装载区卸载区
     mine.add_road(road)
@@ -216,7 +216,7 @@ class MineEnv:
         return observation, reward, done, truncated, info
 
     @staticmethod
-    def make(config_file, seed_value=42, log: bool = False, ticks:bool=False):
+    def make(config_file, sug_dispatcher:str="ShortestTripDispatcher", seed_value:int=42, log: bool = False, ticks:bool=False):
         """通过读取配置文件，返回一个MineRL环境
         :return:
         """
@@ -224,6 +224,7 @@ class MineEnv:
         env = MineEnv(seed_value=seed_value)
         env.config_file = config_file
         env.config = load_config(config_file)
+        env.config["sug_dispatcher"] = sug_dispatcher
         env.log = log
         env.ticks = ticks
 
