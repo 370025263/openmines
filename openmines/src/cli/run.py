@@ -27,7 +27,6 @@ from openmines.src.load_site import LoadSite, Shovel
 from openmines.src.dump_site import DumpSite, Dumper
 from openmines.src.road import Road
 from openmines.src.dispatcher import BaseDispatcher
-from openmines.src.dispatch_algorithms.naive_dispatch import NaiveDispatcher
 from openmines.src.dispatch_algorithms import *
 
 def load_config(filename):
@@ -365,6 +364,15 @@ def run_analysis(log_path, dispatcher_name=None):
     """运行日志分析"""
     console = Console()
     try:
+        # 从环境变量获取API配置
+        api_key = os.getenv('OPENAI_API_KEY')
+        api_base = os.getenv('OPENAI_API_BASE')
+        model_name = os.getenv('OPENAI_MODEL_NAME', 'deepseek-ai/DeepSeek-V3')  # 默认模型名称
+        
+        if not api_key or not api_base:
+            console.print("[bold red]错误: 请设置环境变量 OPENAI_API_KEY 和 OPENAI_API_BASE[/bold red]")
+            return
+            
         # 检查路径是否存在
         path = pathlib.Path(log_path)
         if not path.exists():
@@ -384,8 +392,9 @@ def run_analysis(log_path, dispatcher_name=None):
         
         # 初始化分析器
         analyzer = LogAnalyzer(
-            api_key="sk-whknzqhqufnsnfrjtrofqmlyuxhaobawmdtfhpuvyctaoblr",
-            model_name="deepseek-ai/DeepSeek-V3"
+            api_key=api_key,
+            api_base=api_base,
+            model_name=model_name
         )
         
         if dispatcher_name:
@@ -428,51 +437,87 @@ def run_analysis(log_path, dispatcher_name=None):
         console.print(f"[bold red]错误: {str(e)}[/bold red]")
 
 def main():
-    parser = argparse.ArgumentParser(description='Run a dispatch simulation of a mine with your DISPATCH algorithm and MINE config file')
+    parser = argparse.ArgumentParser(
+        description='OpenMines: A Light and Comprehensive Mining Simulation Environment for Truck Dispatching',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''
+Examples:
+  # Run a simulation with configuration file
+  openmines -f config.json
+  
+  # Visualize simulation results
+  openmines -v result.json
+  
+  # Analyze logs
+  openmines -a logs/
+  
+  # Run fleet size ablation experiment on a single scene
+  openmines scene_based_fleet_ablation -f config.json -m 10 -M 50
+  
+  # Run fleet size ablation experiment comparing algorithms across multiple scenes
+  openmines algo_based_fleet_ablation -d configs/ -b NaiveDispatcher -t MyDispatcher -m 10 -M 100
+        ''')
+    
     subparsers = parser.add_subparsers(help='commands', dest='command')
 
     # 直接访问入口 openmines -f config.json, openmines -v tick.json
-    # 添加运行参数 '-f' 和 '-v'
-    parser.add_argument('-f', '--config-file', type=str, help='Path to the config file')
-    parser.add_argument('-v', '--tick-file', type=str, help='Path to the simulation tick file')
+    parser.add_argument('-f', '--config-file', type=str, 
+                       help='Run simulation with specified config file. Results will be saved in $CWD/result/')
+    parser.add_argument('-v', '--tick-file', type=str, 
+                       help='Visualize simulation results from tick file. Will generate a GIF in $CWD/result/')
+    parser.add_argument('-a', '--analyze', type=str,
+                       help='Analyze log file or directory. If directory is specified, will analyze the latest log file')
 
     # add command 'run'
-    run_parser = subparsers.add_parser('run', help='Run a simulation experiment')
-    run_parser.add_argument('-f', '--config-file', type=str, required=True, help='Path to the config file')
+    run_parser = subparsers.add_parser('run', 
+                                      help='Run a simulation experiment',
+                                      description='Run a simulation with the specified configuration file')
+    run_parser.add_argument('-f', '--config-file', type=str, required=True, 
+                           help='Path to the config file')
 
     # add command visualize
-    visualize_parser = subparsers.add_parser('visualize', help='Visualize a simulation experiment')
-    visualize_parser.add_argument('-f', '--tick-file', type=str, required=True, help='Path to the simulation tick file')
+    visualize_parser = subparsers.add_parser('visualize', 
+                                            help='Visualize a simulation experiment',
+                                            description='Create an animation from simulation results')
+    visualize_parser.add_argument('-f', '--tick-file', type=str, required=True, 
+                                help='Path to the simulation tick file')
 
     # 在单个scenario中，不同算法在不同车队大小中的消融实验
-    scene_based_fleet_ablation_parser = subparsers.add_parser('scene_based_fleet_ablation', help='Run an ablation experiment of fleet size on a certain scene')
-    scene_based_fleet_ablation_parser.add_argument('-f', '--config-file', type=str, required=True, help='Path to the config file')
-    scene_based_fleet_ablation_parser.add_argument('-m', '--min', type=str, required=True, help='Minimum value of the truck number')
-    scene_based_fleet_ablation_parser.add_argument('-M', '--max', type=str, required=True, help='Maximum value of the truck number')
+    scene_based_fleet_ablation_parser = subparsers.add_parser('scene_based_fleet_ablation', 
+        help='Run fleet size ablation experiment on a single scene',
+        description='Test algorithm performance by varying truck scales in the same scene')
+    scene_based_fleet_ablation_parser.add_argument('-f', '--config-file', type=str, required=True, 
+                                                  help='Path to the config file')
+    scene_based_fleet_ablation_parser.add_argument('-m', '--min', type=str, required=True, 
+                                                  help='Minimum number of trucks')
+    scene_based_fleet_ablation_parser.add_argument('-M', '--max', type=str, required=True, 
+                                                  help='Maximum number of trucks')
 
     # 在不同scenario中，目标算法和基线算法在不同车队大小中的消融实验
-    algo_based_fleet_ablation_parser = subparsers.add_parser('algo_based_fleet_ablation', help='Run an ablation experiment of fleet size on a certain scene')
-    # a folder containing multiple config files
-    algo_based_fleet_ablation_parser.add_argument('-d', '--config-dir', type=str, required=True, help='Path to the config directory')
-    # baseline algorithm name
-    algo_based_fleet_ablation_parser.add_argument('-b', '--baseline', type=str, required=True, help='Baseline algorithm name')
-    # target algorithm name
-    algo_based_fleet_ablation_parser.add_argument('-t', '--target', type=str, required=True, help='Target algorithm name')
-    # truck min number, 如果没有指定就是1
-    algo_based_fleet_ablation_parser.add_argument('-m', '--min', type=str, required=False, help='Minimum value of the truck number',
-                                                  default=1)
-    # truck max number, 如果没有指定就是160
-    algo_based_fleet_ablation_parser.add_argument('-M', '--max', type=str, required=False, help='Maximum value of the truck number',
-                                                  default=160)
+    algo_based_fleet_ablation_parser = subparsers.add_parser('algo_based_fleet_ablation', 
+        help='Compare algorithms across multiple scenes with varying fleet sizes',
+        description='Compare target algorithm against baseline across multiple scenes and fleet sizes')
+    algo_based_fleet_ablation_parser.add_argument('-d', '--config-dir', type=str, required=True, 
+                                                 help='Directory containing multiple config files')
+    algo_based_fleet_ablation_parser.add_argument('-b', '--baseline', type=str, required=True, 
+                                                 help='Name of the baseline algorithm')
+    algo_based_fleet_ablation_parser.add_argument('-t', '--target', type=str, required=True, 
+                                                 help='Name of the target algorithm to compare')
+    algo_based_fleet_ablation_parser.add_argument('-m', '--min', type=str, required=False, 
+                                                 help='Minimum number of trucks (default: 1)',
+                                                 default=1)
+    algo_based_fleet_ablation_parser.add_argument('-M', '--max', type=str, required=False, 
+                                                 help='Maximum number of trucks (default: 160)',
+                                                 default=160)
 
-    # 添加分析命令的两种方式
-    parser.add_argument('-a', '--analyze', type=str, help='Analyze log file or directory')
-    
-    # 作为子命令
-    analyze_parser = subparsers.add_parser('analyze', help='Analyze simulation logs')
-    analyze_parser.add_argument('log_path', type=str, help='Path to the log file or directory')
+    # 作为子命令的分析功能
+    analyze_parser = subparsers.add_parser('analyze', 
+                                          help='Analyze simulation logs',
+                                          description='Extract and analyze data from simulation logs')
+    analyze_parser.add_argument('log_path', type=str, 
+                              help='Path to the log file or directory (will use latest log if directory)')
     analyze_parser.add_argument('-d', '--dispatcher', type=str, 
-                               help='Specify dispatcher name explicitly')
+                              help='Specify dispatcher name to analyze')
 
     args = parser.parse_args()
     

@@ -11,7 +11,7 @@ from importlib import import_module
 import pkgutil
 
 class LogAnalyzer:
-    def __init__(self, api_key, model_name="deepseek-chat"):
+    def __init__(self, api_key, api_base="https://api.siliconflow.cn", model_name="deepseek-chat"):
         self.model_name = model_name
         self.time_intervals = [
             (0, 80, "0-80分钟"),
@@ -25,7 +25,7 @@ class LogAnalyzer:
         try:
             # 尝试新版API
             from openai import OpenAI
-            self.client = OpenAI(api_key=api_key, base_url="https://api.siliconflow.cn")
+            self.client = OpenAI(api_key=api_key, base_url=api_base)
             self.api_version = "new"
         except ImportError:
             # 回退到旧版API
