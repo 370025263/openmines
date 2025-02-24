@@ -123,11 +123,11 @@ class Agent(nn.Module):
 
         self.obs_shape = 194
         # 添加维度检查
-        assert len(normalization_params["mean"]) == self.obs_shape, \
-            f"Normalization mean dimension {len(normalization_params['mean'])} " \
+        assert len(normalization_params["state_mean"]) == self.obs_shape, \
+            f"Normalization mean dimension {len(normalization_params['state_mean'])} " \
             f"does not match obs_shape {self.obs_shape}"
-        assert len(normalization_params["std"]) == self.obs_shape, \
-            f"Normalization std dimension {len(normalization_params['std'])} " \
+        assert len(normalization_params["state_std"]) == self.obs_shape, \
+            f"Normalization std dimension {len(normalization_params['state_std'])} " \
             f"does not match obs_shape {self.obs_shape}"
 
         hidden_size = args.hidden_size
@@ -150,21 +150,40 @@ class Agent(nn.Module):
             layer_init(nn.Linear(hidden_size, 1), std=1),
         )
 
-        # 添加正则化参数
+        # 注册状态和奖励的正则化参数
         self.register_buffer(
             "obs_mean",
-            torch.tensor(normalization_params["mean"], dtype=torch.float32)
+            torch.tensor(normalization_params["state_mean"], dtype=torch.float32)
         )
         self.register_buffer(
             "obs_std", 
-            torch.tensor(normalization_params["std"], dtype=torch.float32)
+            torch.tensor(normalization_params["state_std"], dtype=torch.float32)
         )
+        self.register_buffer(
+            "reward_mean",
+            torch.tensor(normalization_params["reward_mean"], dtype=torch.float32)
+        )
+        self.register_buffer(
+            "reward_std",
+            torch.tensor(normalization_params["reward_std"], dtype=torch.float32)
+        )
+        
         # 为了数值稳定性,将过小的std设置为1
         self.obs_std[self.obs_std < 1e-5] = 1.0
+        if self.reward_std < 1e-5:
+            self.reward_std = torch.tensor(1.0, device=self.reward_std.device)
 
     def normalize_obs(self, obs):
         """对观察值进行正则化"""
         return (obs - self.obs_mean) / self.obs_std
+    
+    def normalize_reward(self, reward):
+        """对奖励进行正则化"""
+        return (reward - self.reward_mean) / self.reward_std
+    
+    def denormalize_reward(self, normalized_reward):
+        """将正则化的奖励转换回原始尺度"""
+        return normalized_reward * self.reward_std + self.reward_mean
 
     def get_value(self, x):
         x = self.normalize_obs(x)
@@ -409,25 +428,35 @@ if __name__ == "__main__":
             optimizer.param_groups[0]["lr"] = lrnow
 
         # 2) rollout data collection
-        # if iteration % args.save_interval == 0: # 移除save_interval条件限制
         is_best = False
-        current_reward = 0
+        current_raw_reward = 0
+        current_normalized_reward = 0  # 初始化变量
+        
         if "episode" in infos and "r" in infos["episode"]:
-            current_reward = infos["episode"]["r"]
-        if current_reward > best_reward:
-            best_reward = current_reward
+            current_raw_reward = infos["episode"]["r"]
+            current_normalized_reward = agent.normalize_reward(
+                torch.tensor(current_raw_reward, device=device)
+            ).item()
+            
+            # 记录两种奖励
+            writer.add_scalar("charts/checkpoint_reward_raw", current_raw_reward, global_step)
+            writer.add_scalar("charts/checkpoint_reward_normalized", current_normalized_reward, global_step)
+            
+        if current_raw_reward > best_reward:
+            best_reward = current_raw_reward
             is_best = True
 
-        if iteration % args.save_interval == 0 or is_best: # 周期性checkpoint和best model checkpoint都保存
+        if iteration % args.save_interval == 0 or is_best:
             checkpoint_manager.save_checkpoint(
                 agent,
                 optimizer,
                 iteration,
-                current_reward,
+                current_raw_reward,  # 保存原始奖励
                 is_best,
                 additional_info={
                     'global_step': global_step,
-                    'time_elapsed': time.time() - start_time
+                    'time_elapsed': time.time() - start_time,
+                    'normalized_reward': current_normalized_reward  # 同时记录正则化奖励
                 }
             )
 
@@ -450,10 +479,15 @@ if __name__ == "__main__":
             next_obs_np, reward, terminations, truncations, infos = envs.step(action.cpu().numpy())
             next_obs = torch.FloatTensor(next_obs_np).to(device)
             next_done = torch.FloatTensor(np.logical_or(terminations, truncations)).to(device)
-            rewards[step] = torch.tensor(reward, device=device).view(-1)
+            
+            # 对奖励进行正则化
+            reward_tensor = torch.tensor(reward, device=device).view(-1)
+            normalized_reward = agent.normalize_reward(reward_tensor)
+            rewards[step] = normalized_reward
+            
             time_deltas[step] = torch.FloatTensor(next_obs_np[:, 4]).to(device)
 
-            # 更新每个环境的累计奖励
+            # 更新每个环境的累计奖励 (使用原始奖励)
             for idx in range(args.num_envs):
                 envs.episode_rewards[idx] += reward[idx]
                 envs.episode_counts[idx] += 1
@@ -464,10 +498,24 @@ if __name__ == "__main__":
                     # 记录产出吨数
                     produce_tons = sum(np.exp(infos["final_observation"][idx][-5:]) - 1)
                     envs.episode_produce_tons.append(produce_tons)
-                    episode_reward = envs.episode_rewards[idx]
+                    
+                    # 获取原始奖励和正则化奖励
+                    raw_episode_reward = envs.episode_rewards[idx]
+                    normalized_episode_reward = agent.normalize_reward(
+                        torch.tensor(raw_episode_reward, device=device)
+                    ).item()
+                    
                     episode_length = envs.episode_counts[idx]
-                    print(f"global_step={global_step}, env_id={idx}, produce_tons={produce_tons}, reward={episode_reward}")
-                    writer.add_scalar("charts/episodic_return", episode_reward, global_step)
+                    
+                    # 打印原始和正则化的奖励
+                    print(f"global_step={global_step}, env_id={idx}")
+                    print(f"  produce_tons={produce_tons:.2f}")
+                    print(f"  raw_reward={raw_episode_reward:.2f}")
+                    print(f"  normalized_reward={normalized_episode_reward:.2f}")
+                    
+                    # 分别记录原始和正则化的奖励
+                    writer.add_scalar("charts/episodic_return", raw_episode_reward, global_step)
+                    writer.add_scalar("charts/episodic_return_normalized", normalized_episode_reward, global_step)
                     writer.add_scalar("charts/episodic_length", episode_length, global_step)
                         
                     # 重置计数器
@@ -644,3 +692,8 @@ if __name__ == "__main__":
 
     envs.close()
     writer.close()
+
+    # 在训练结束时打印最终的统计信息
+    print("\n训练完成!")
+    print(f"最佳原始奖励: {best_reward:.2f}")
+    print(f"最佳正则化奖励: {agent.normalize_reward(torch.tensor(best_reward, device=device)).item():.2f}")
