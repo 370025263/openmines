@@ -31,9 +31,7 @@ from torch.utils.tensorboard import SummaryWriter
 
 import openmines_gym
 
-# 加载正则化参数
-with open("./normalization_params.json", "r") as f:
-    normalization_params = json.load(f)
+
 
 @dataclass
 class Args:
@@ -48,7 +46,7 @@ class Args:
 
     # Algorithm-specific arguments
     env_id: str = "mine/Mine-v1"
-    mine_config: str = "/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/openmines/src/conf/north_pit_mine.json"
+    mine_config: str = "/home/weiyu/stone/openmines_project/openmines/openmines/src/conf/north_pit_mine.json"
     total_timesteps: int = 10000000
 
     # ------ 以下是目标超参数 ------
@@ -61,7 +59,7 @@ class Args:
     max_grad_norm: float = 0.363605168165705
 
     # 其余保持不变
-    num_envs: int = 5
+    num_envs: int = 50
     num_steps: int = 1400
     anneal_lr: bool = True
     norm_adv: bool = True
@@ -118,13 +116,20 @@ def layer_init(layer, std=np.sqrt(2), bias_const=0.0):
 
 
 class Agent(nn.Module):
-    def __init__(self, envs):
+    def __init__(self, envs, args, norm_path=None):
         super().__init__()
         self.load_sites_num = 5
         self.dump_sites_num =  5
         self.max_action_dim = max(self.load_sites_num, self.dump_sites_num)
 
         self.obs_shape = 194
+        # 加载正则化参数
+        import os
+        if norm_path is None:
+            norm_path = os.path.join(os.getcwd(), "normalization_params.json")
+        print(f"正在读取正则化参数文件: {norm_path}")
+        with open(norm_path, "r") as f:
+            normalization_params = json.load(f)
         # 添加维度检查
         assert len(normalization_params["state_mean"]) == self.obs_shape, \
             f"Normalization mean dimension {len(normalization_params['state_mean'])} " \
@@ -267,22 +272,27 @@ class CheckpointManager:
             'info': additional_info or {}
         }
 
+        # 获取产出吨数和步数信息
+        produce_tons = additional_info.get('produce_tons', 0.0) if additional_info else 0.0
+        global_step = additional_info.get('global_step', 0) if additional_info else 0
+        
+        # 构建包含关键指标的文件名
+        filename = f'model_step{global_step:07d}_tons{produce_tons:.1f}_reward{reward:.2f}.pt'
+
         if not self.args.save_best_only:
-            checkpoint_path = os.path.join(
-                self.checkpoint_dir,
-                f'checkpoint_{iteration:07d}.pt'
-            )
+            checkpoint_path = os.path.join(self.checkpoint_dir, filename)
             torch.save(checkpoint, checkpoint_path)
         else:
-            checkpoint_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
+            checkpoint_path = os.path.join(self.checkpoint_dir, filename)
 
         if is_best:
-            best_path = os.path.join(self.checkpoint_dir, 'best_model.pt')
-            if self.args.save_best_only_params: # 只保存参数
+            # 最佳模型也使用相同的命名方式
+            best_path = os.path.join(self.checkpoint_dir, f'best_{filename}')
+            if self.args.save_best_only_params:
                 torch.save(agent.state_dict(), best_path)
-            else: # 保存完整checkpoint
+            else:
                 torch.save(checkpoint, best_path)
-            print(f"New best model saved with reward: {reward:.2f}")
+            print(f"新的最佳模型已保存 - 步数: {global_step}, 产量: {produce_tons:.1f}, 奖励: {reward:.2f}")
 
         self._cleanup_old_checkpoints()
         return checkpoint_path
@@ -317,8 +327,9 @@ class CheckpointManager:
                 os.remove(ckpt)
 
     def _get_checkpoints(self):
+        # 修改文件筛选方式以匹配新的命名格式
         files = [f for f in os.listdir(self.checkpoint_dir)
-                 if f.startswith('checkpoint_') and f.endswith('.pt')]
+                if f.startswith('model_') and f.endswith('.pt')]
         files = [os.path.join(self.checkpoint_dir, f) for f in files]
         return sorted(files)
 
@@ -378,7 +389,7 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
         "only discrete action space is supported"
 
-    agent = Agent(envs).to(device)
+    agent = Agent(args=args,envs=envs, norm_path="/home/weiyu/stone/openmines_project/openmines/openmines/test/cleanrl/normalization_params_dense.json").to(device)
 
     # 使用指定learning rate
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)
@@ -426,6 +437,8 @@ if __name__ == "__main__":
     if not hasattr(envs, 'episode_produce_tons'):
         envs.episode_produce_tons = []
 
+    max_avg_tons = 0
+    avg_tons = 0
     for iteration in range(start_iteration + 1, args.num_iterations + 1):
         # 1) Learning rate annealing
         if args.anneal_lr:
@@ -447,9 +460,9 @@ if __name__ == "__main__":
             # 记录两种奖励
             writer.add_scalar("charts/checkpoint_reward_raw", current_raw_reward, global_step)
             writer.add_scalar("charts/checkpoint_reward_normalized", current_normalized_reward, global_step)
-            
-        if current_raw_reward > best_reward:
-            best_reward = current_raw_reward
+
+        if avg_tons > max_avg_tons:
+            max_avg_tons = max(avg_tons,max_avg_tons)
             is_best = True
 
         if iteration % args.save_interval == 0 or is_best:
@@ -462,7 +475,8 @@ if __name__ == "__main__":
                 additional_info={
                     'global_step': global_step,
                     'time_elapsed': time.time() - start_time,
-                    'normalized_reward': current_normalized_reward  # 同时记录正则化奖励
+                    'normalized_reward': current_normalized_reward,  # 同时记录正则化奖励
+                    'produce_tons': latest_produce_tons,
                 }
             )
 
@@ -535,7 +549,7 @@ if __name__ == "__main__":
                     writer.add_scalar("charts/avg_produce_tons_per_rollout", avg_tons, global_step)
                     envs.episode_produce_tons = []
                 
-
+                latest_produce_tons = avg_tons
 
         # 3) GAE + returns
         with torch.no_grad():
