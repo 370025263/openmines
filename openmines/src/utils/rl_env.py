@@ -26,7 +26,7 @@ def load_config(filename):
         return json.load(file)
 
 
-def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=60*8, log:bool=False, ticks:bool=False, seed:int=42):
+def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, reward_mode:str = "dense",  total_time:float=60*8, log:bool=False, ticks:bool=False, seed:int=42):
     """接受mp的输入，然后构建mine和子进程。
     为了兼容windows平台的spawn机制
     因为simpy的env无法序列化，所以必须在子进程中构建mine和simpy的env
@@ -39,7 +39,7 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # log_path 为cwd下的logs文件夹
     log_path = pathlib.Path.cwd() / 'logs'
     # dispatcher
-    dispatcher = RLDispatcher(sug_dispatcher=config['sug_dispatcher'])
+    dispatcher = RLDispatcher(sug_dispatcher=config['sug_dispatcher'], reward_mode=reward_mode)
     # 初始化矿山
     mine = Mine(config['mine']['name'], log_path=log_path,
                 log_file_level=logging.DEBUG if log else logging.ERROR,
@@ -101,8 +101,7 @@ def prepare_env(obs_queue:Queue, act_queue:Queue, config:dict, total_time:float=
     # # 添加充电站和装载区卸载区
     mine.add_road(road)
     mine.add_charging_site(charging_site)
-    mine.start_rl(obs_queue, act_queue, total_time, ticks=ticks)  # 子进程的任务
-
+    mine.start_rl(obs_queue, act_queue, reward_mode=reward_mode, total_time=total_time,  ticks=ticks)  # 子进程的任务
 
 class ActionSpace:
     def __init__(self, seed=42):
@@ -216,7 +215,7 @@ class MineEnv:
         return observation, reward, done, truncated, info
 
     @staticmethod
-    def make(config_file, sug_dispatcher:str="ShortestTripDispatcher", seed_value:int=42, log: bool = False, ticks:bool=False):
+    def make(config_file, sug_dispatcher:str="ShortestTripDispatcher", reward_mode:str = "dense", seed_value:int=42, log: bool = False, ticks:bool=False):
         """通过读取配置文件，返回一个MineRL环境
         :return:
         """
@@ -225,6 +224,7 @@ class MineEnv:
         env.config_file = config_file
         env.config = load_config(config_file)
         env.config["sug_dispatcher"] = sug_dispatcher
+        env.reward_mode = reward_mode
         env.log = log
         env.ticks = ticks
 
@@ -232,7 +232,7 @@ class MineEnv:
         # 下面开启一个env的子进程
         env.obs_queue = Queue()
         env.act_queue = Queue()
-        env.p = multiprocessing.Process(target=prepare_env, args=(env.obs_queue, env.act_queue, env.config, env.config['sim_time'], env.log, env.ticks, seed_value))
+        env.p = multiprocessing.Process(target=prepare_env, args=(env.obs_queue, env.act_queue, env.config, env.reward_mode, env.config['sim_time'], env.log, env.ticks, seed_value))
         env.p.start()
 
         """
@@ -258,7 +258,7 @@ class MineEnv:
         # 下面开启一个env的子进程
         self.obs_queue = Queue()
         self.act_queue = Queue()
-        self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.config['sim_time'], self.log, self.ticks, self.seed_value))
+        self.p = multiprocessing.Process(target=prepare_env, args=(self.obs_queue, self.act_queue, self.config, self.reward_mode, self.config['sim_time'], self.log, self.ticks, self.seed_value))
         self.p.start()
         """
         out = {

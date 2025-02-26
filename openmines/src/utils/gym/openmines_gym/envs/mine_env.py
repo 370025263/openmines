@@ -18,7 +18,7 @@ class GymMineEnv(gym.Env):
     """将矿山环境包装为标准的gym环境"""
     metadata = {"render_modes": None, "render_fps": None}
 
-    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+    def __init__(self, config_file, reward_mode:str = "dense", sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
         super().__init__()
 
         # 加载配置
@@ -28,6 +28,7 @@ class GymMineEnv(gym.Env):
             
         # 添加调度器配置
         self.config['sug_dispatcher'] = sug_dispatcher
+        self.reward_mode = reward_mode
         
         self.load_site_n = len(self.config['load_sites'])
         self.dump_site_n = len(self.config['dump_sites'])
@@ -106,7 +107,7 @@ class GymMineEnv(gym.Env):
         self.process = multiprocessing.Process(
             target=prepare_env,
             args=(self.obs_queue, self.act_queue, self.config,
-                  self.config['sim_time'], self.log, self.ticks, self.seed_value)
+                  self.reward_mode, self.config['sim_time'], self.log, self.ticks, self.seed_value)
         )
         self.process.start()
 
@@ -153,7 +154,7 @@ class ThreadMineEnv(gym.Env):
     """将矿山环境包装为标准的gym环境(线程版本)"""
     metadata = {"render_modes": None, "render_fps": None}
 
-    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+    def __init__(self, config_file, reward_mode:str = "dense", sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
         super().__init__()
 
         # 加载配置
@@ -163,6 +164,7 @@ class ThreadMineEnv(gym.Env):
             
         # 添加调度器配置    
         self.config['sug_dispatcher'] = sug_dispatcher
+        self.reward_mode = reward_mode
         
         self.load_site_n = len(self.config['load_sites'])
         self.dump_site_n = len(self.config['dump_sites'])
@@ -264,6 +266,7 @@ class ThreadMineEnv(gym.Env):
                 self.obs_queue,
                 self.act_queue,
                 self.config,
+                self.reward_mode,
                 self.config['sim_time'],
                 self.log,
                 self.ticks,
@@ -311,12 +314,35 @@ class ThreadMineEnv(gym.Env):
         pass
 
 
+class ThreadMineDenseEnv(GymMineEnv):
+    """密集奖励的多线程矿山环境"""
+    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+        super().__init__(config_file=config_file, reward_mode="dense", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)
+
+class ThreadMineSparseEnv(GymMineEnv):
+    """稀疏奖励的多线程矿山环境"""
+    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+        super().__init__(config_file=config_file, reward_mode="sparse", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)
+
+class GymMineDenseEnv(GymMineEnv):
+    """密集奖励的单线程矿山环境"""
+    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+        super().__init__(config_file=config_file, reward_mode="dense", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)
+
+class GymMineSparseEnv(GymMineEnv):
+    """稀疏奖励的单线程矿山环境"""
+    def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
+        super().__init__(config_file=config_file, reward_mode="sparse", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)
+
+
+
 # 使用示例
 if __name__ == "__main__":
     """
-    THREAD MINE"""
+    THREAD MINE: dense(default)
+    """
     # 创建环境
-    env = ThreadMineEnv("/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/openmines/src/conf/north_pit_mine.json", 
+    env = ThreadMineEnv("../../../../conf/north_pit_mine.json", 
                         sug_dispatcher="NaiveDispatcher",
                          log=False, ticks=False)
     # 添加episode统计包装器
@@ -333,24 +359,42 @@ if __name__ == "__main__":
             observation, info = env.reset()
             break
     env.close()
-
-    # """Multiprocessing Mine"""
-    # # 创建环境
-    # env = GymMineEnv("../../../../conf/north_pit_mine.json", log=False, ticks=False)
-    # # 添加一些常用的包装器
-    # env = gym.wrappers.RecordEpisodeStatistics(env)  # 记录episode统计
-    # # 使用环境
-    # observation, info = env.reset(seed=42)
-    # for i in range(2000):
-    #     action = env.action_space.sample()  # 随机动作
-    #     print(f"A_{i} Action: {action}")
-    #     observation, reward, terminated, truncated, info = env.step(action)
-    #     if i % 70 == 0 and i !=0:
-    #         pass
-    #     print(f"Step: {i}, Reward: {reward}, Info: {info} terminated: {terminated}, truncated: {truncated}")
-    #
-    #     if terminated or truncated:
-    #         observation, info = env.reset()
-    #         break
-    #
-    # env.close()
+    """
+    GYM IMPORT MINES
+    """
+    import openmines_gym
+    import gymnasium as gym
+    
+    # 测试dense环境
+    env = gym.make('mine/Mine-v1-dense', config_file="../../../../conf/north_pit_mine.json",
+                   sug_dispatcher="NaiveDispatcher", log=False, ticks=False)
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    
+    observation, info = env.reset(seed=42)
+    for i in range(1000):
+        action = info["sug_action"]  # 使用建议动作
+        print(f"Dense Step {i}, Action: {action}")
+        observation, reward, terminated, truncated, info = env.step(action)
+        print(f"Dense Step {i}, Reward: {reward}, Info: {info}")
+        if terminated or truncated:
+            print("Dense Environment terminated!")
+            observation, info = env.reset()
+            break
+    env.close()
+    
+    # 测试sparse环境
+    env = gym.make('mine/Mine-v1-sparse', config_file="../../../../conf/north_pit_mine.json",
+                   sug_dispatcher="NaiveDispatcher", log=False, ticks=False)
+    env = gym.wrappers.RecordEpisodeStatistics(env)
+    
+    observation, info = env.reset(seed=42)
+    for i in range(1000):
+        action = info["sug_action"]  # 使用建议动作
+        print(f"Sparse Step {i}, Action: {action}")
+        observation, reward, terminated, truncated, info = env.step(action)
+        print(f"Sparse Step {i}, Reward: {reward}, Info: {info}")
+        if terminated or truncated:
+            print("Sparse Environment terminated!")
+            observation, info = env.reset()
+            break
+    env.close()

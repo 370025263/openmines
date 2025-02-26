@@ -394,7 +394,7 @@ class Mine:
         ticks = self.dump_frames(total_time=total_time)
         return ticks
 
-    def start_rl(self, obs_queue:Queue, act_queue:Queue, total_time:float=60*8, ticks:bool=False)->dict:
+    def start_rl(self, obs_queue:Queue, act_queue:Queue, reward_mode:str = "dense", total_time:float=60*8, ticks:bool=False)->dict:
         """
         使用RL算法的仿真入口
         :param total_time:
@@ -453,7 +453,12 @@ class Mine:
         # 当模拟结束的时候 最后发送一个ob和done等信息
         ob = self.dispatcher.current_observation
         info = ob["info"]
-        reward = self.dispatcher._get_reward(self)
+        if reward_mode == "dense":
+            reward = self.dispatcher._get_reward_dense(self)
+        elif reward_mode == "sparse":
+           reward = self.dispatcher._get_reward_dense(self)
+        else:
+            raise ValueError(f"Unknown reward mode: {reward_mode}")
         done = True
         self.env.done = done
         trucated = False
