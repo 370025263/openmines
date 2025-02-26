@@ -3,6 +3,11 @@ __pycache__/
 *.py[cod]
 *$py.class
 
+# temp
+datasets/
+wandb/
+results/
+openmines/src/dispatch_algorithms/checkpoints
 # .DS_Store
 *DS_Store
 
