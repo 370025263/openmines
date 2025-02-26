@@ -34,3 +34,4 @@ Note: 没有使用reward正则化RL训练会比不过经典策略。(@stone91 (M
 model可以从checkpoints中进行寻找，通常训练的时候会将表现好的模型保存。
 然后使用openmines -f mine_config_that_include_your_ppo_dispacher.json 就可以获得报告。
 
+

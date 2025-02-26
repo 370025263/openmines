@@ -19,6 +19,12 @@ import time
 from dataclasses import dataclass
 from typing import Optional, Dict
 import json
+import datetime
+from pathlib import Path
+import subprocess
+import tempfile
+import shutil
+import sys
 
 import gymnasium as gym
 import numpy as np
@@ -46,7 +52,7 @@ class Args:
 
     # Algorithm-specific arguments
     env_id: str = "mine/Mine-v1"
-    mine_config: str = "/home/weiyu/stone/openmines_project/openmines/openmines/src/conf/north_pit_mine.json"
+    mine_config: str = "../../src/conf/north_pit_mine.json"
     total_timesteps: int = 10000000
 
     # ------ 以下是目标超参数 ------
@@ -59,7 +65,7 @@ class Args:
     max_grad_norm: float = 0.363605168165705
 
     # 其余保持不变
-    num_envs: int = 50
+    num_envs: int = 5
     num_steps: int = 1400
     anneal_lr: bool = True
     norm_adv: bool = True
@@ -124,9 +130,8 @@ class Agent(nn.Module):
 
         self.obs_shape = 194
         # 加载正则化参数
-        import os
         if norm_path is None:
-            norm_path = os.path.join(os.getcwd(), "normalization_params.json")
+            norm_path = manage_normalization_params(args=args)
         print(f"正在读取正则化参数文件: {norm_path}")
         with open(norm_path, "r") as f:
             normalization_params = json.load(f)
@@ -334,6 +339,203 @@ class CheckpointManager:
         return sorted(files)
 
 
+def manage_normalization_params(specified_path: Optional[str] = None, args: Optional[Args] = None) -> str:
+    """
+    管理正则化参数文件。
+    - 首先检查指定路径或当前工作目录是否存在参数文件
+    - 如果存在，询问用户是否使用（带倒计时）
+    - 如果不存在或用户选择不使用，则从dqn_collector收集新数据
+    
+    Args:
+        specified_path: 用户指定的参数文件路径
+        args: 程序参数，用于获取env_id和配置文件等信息
+        
+    Returns:
+        str: 参数文件的绝对路径
+    """
+    param_file_name = "normalization_params.json"
+    
+    # 1. 检查指定路径或当前目录是否存在参数文件
+    param_file_path = None
+    if specified_path:
+        if os.path.isfile(specified_path):
+            param_file_path = specified_path
+        else:
+            print(f"指定的参数文件不存在: {specified_path}")
+    
+    # 检查当前目录
+    if param_file_path is None:
+        cwd_param_file = os.path.join(os.getcwd(), param_file_name)
+        if os.path.isfile(cwd_param_file):
+            param_file_path = cwd_param_file
+    
+    # 2. 如果找到文件，询问用户是否使用（带10秒倒计时）
+    use_existing_file = False
+    if param_file_path:
+        file_stats = os.stat(param_file_path)
+        create_time = datetime.datetime.fromtimestamp(file_stats.st_ctime).strftime('%Y-%m-%d %H:%M:%S')
+        
+        print(f"发现正则化参数文件:")
+        print(f"  路径: {os.path.abspath(param_file_path)}")
+        print(f"  创建时间: {create_time}")
+        
+        # 带倒计时的输入提示
+        import threading
+        if os.name == 'nt':
+            import msvcrt
+        
+        timeout = 10  # 10秒倒计时
+        answer = None
+        
+        def input_thread():
+            nonlocal answer
+            answer = input(f"是否使用此文件? [Y/n] ({timeout}秒后自动选Y): ").strip().lower()
+        
+        def countdown_thread():
+            nonlocal timeout
+            while timeout > 0 and answer is None:
+                sys.stdout.write(f"\r等待输入... {timeout}秒 ")
+                sys.stdout.flush()
+                time.sleep(1)
+                timeout -= 1
+            sys.stdout.write("\r" + " " * 30 + "\r")  # 清除倒计时显示
+            sys.stdout.flush()
+        
+        input_t = threading.Thread(target=input_thread)
+        input_t.daemon = True
+        input_t.start()
+        
+        countdown_t = threading.Thread(target=countdown_thread)
+        countdown_t.daemon = True
+        countdown_t.start()
+        
+        input_t.join(timeout + 0.5)  # 给一点额外时间
+        
+        if answer is None:  # 超时，默认使用现有文件
+            print("超时，默认使用现有参数文件")
+            use_existing_file = True
+        else:
+            use_existing_file = answer == "" or answer == "y"
+    
+    # 3. 如果用户选择不使用已有文件或没有找到文件，从dqn_collector收集新数据
+    if not use_existing_file:
+        print("将使用dqn_collector收集新数据并生成参数文件...")
+        
+        # 确定系统临时目录路径
+        temp_dir = tempfile.mkdtemp(prefix="normalization_params_")
+        try:
+            # 从args获取环境配置路径和env_id
+            env_config = args.mine_config if args and hasattr(args, 'mine_config') else None
+            env_id = args.env_id if args and hasattr(args, 'env_id') else "mine/Mine-v1"
+            
+            # 如果没有提供配置文件，尝试查找默认位置
+            if not env_config or not os.path.isfile(env_config):
+                # 自动查找项目根目录下的配置文件
+                base_dir = Path(__file__).resolve().parents[3]  # 获取项目根目录
+                default_configs = [
+                    str(base_dir / "src" / "conf" / "north_pit_mine.json"),
+                    str(Path(os.getcwd()).parent.parent / "src" / "conf" / "north_pit_mine.json"),
+                    str(Path(os.getcwd()) / "north_pit_mine.json")
+                ]
+                
+                for config_path in default_configs:
+                    if os.path.isfile(config_path):
+                        env_config = config_path
+                        print(f"自动找到配置文件: {env_config}")
+                        break
+            
+            if not env_config or not os.path.isfile(env_config):
+                raise FileNotFoundError("无法找到有效的环境配置文件，请通过--mine_config指定")
+            
+            print(f"使用环境配置: {env_config}")
+            print(f"环境ID: {env_id}")
+            print("正在收集数据，这可能需要一些时间...")
+            
+            try:
+                # 导入数据收集器
+                from openmines.src.utils.rl_data_collector.dqn_collector import DataCollector
+                
+                # 创建数据收集器并收集数据
+                collector = DataCollector(
+                    env_config=env_config,
+                    env_id=env_id,  # 传递env_id参数
+                    episodes=3,     # 使用较少的episodes以加快速度
+                    max_steps=1000
+                )
+                collector.collect_data()  # 使用dense奖励模式
+                
+                # 找到生成的参数文件
+                dataset_dir = os.path.join("datasets", collector.run_id)
+                new_param_file = os.path.join(dataset_dir, param_file_name)
+                
+                # 复制到当前目录
+                param_file_path = os.path.join(os.getcwd(), param_file_name)
+                shutil.copy(new_param_file, param_file_path)
+                
+                print(f"参数文件已生成并复制到: {param_file_path}")
+                
+            except Exception as e:
+                print(f"收集数据时出错: {str(e)}")
+                print("将尝试使用命令行方式运行收集器...")
+                
+                try:
+                    # 备选方案：使用subprocess运行dqn_collector脚本
+                    script_path = str(Path(base_dir) / "src" / "utils" / "rl_data_collector" / "dqn_collector.py")
+                    if not os.path.isfile(script_path):
+                        # 尝试查找相对路径
+                        script_path = str(Path(os.getcwd()).parent.parent / "src" / "utils" / "rl_data_collector" / "dqn_collector.py")
+                    
+                    if not os.path.isfile(script_path):
+                        raise FileNotFoundError(f"找不到数据收集器脚本: {script_path}")
+                    
+                    cmd = [
+                        sys.executable, 
+                        script_path, 
+                        "--episodes", "3", 
+                        "--max_steps", "500", 
+                        "--env_config", env_config,
+                        "--env_id", env_id
+                    ]
+                    
+                    subprocess.run(cmd, check=True)
+                    
+                    # 查找最新生成的目录
+                    datasets_dir = Path("datasets")
+                    if datasets_dir.exists():
+                        dirs = sorted(datasets_dir.glob("dispatch_data_*"), 
+                                     key=lambda x: x.stat().st_mtime, reverse=True)
+                        if dirs:
+                            new_param_file = dirs[0] / param_file_name
+                            param_file_path = os.path.join(os.getcwd(), param_file_name)
+                            shutil.copy(str(new_param_file), param_file_path)
+                            print(f"参数文件已生成并复制到: {param_file_path}")
+                        else:
+                            raise Exception("未找到生成的数据集目录")
+                    else:
+                        raise Exception("未找到datasets目录")
+                    
+                except Exception as sub_e:
+                    print(f"使用命令行运行收集器时出错: {str(sub_e)}")
+                    raise Exception("无法生成正则化参数文件") from sub_e
+                    
+        finally:
+            # 清理临时目录
+            shutil.rmtree(temp_dir, ignore_errors=True)
+    
+    # 验证参数文件
+    if param_file_path and os.path.isfile(param_file_path):
+        try:
+            with open(param_file_path, 'r') as f:
+                params = json.load(f)
+                print(f"成功加载正则化参数，特征维度: {params.get('feature_dims', 'unknown')}")
+                return param_file_path
+        except Exception as e:
+            print(f"验证参数文件时出错: {str(e)}")
+            raise Exception("参数文件无效") from e
+    else:
+        raise FileNotFoundError(f"找不到正则化参数文件: {param_file_path}")
+
+
 if __name__ == "__main__":
     args = tyro.cli(Args)
     # compute batch sizes
@@ -389,7 +591,9 @@ if __name__ == "__main__":
     assert isinstance(envs.single_action_space, gym.spaces.Discrete), \
         "only discrete action space is supported"
 
-    agent = Agent(args=args,envs=envs, norm_path="/home/weiyu/stone/openmines_project/openmines/openmines/test/cleanrl/normalization_params_dense.json").to(device)
+    # 使用正则化参数管理函数，传递args以获取env_id和配置信息
+    norm_path = manage_normalization_params(args=args)
+    agent = Agent(args=args, envs=envs, norm_path=norm_path).to(device)
 
     # 使用指定learning rate
     optimizer = optim.Adam(agent.parameters(), lr=args.learning_rate, eps=1e-5)

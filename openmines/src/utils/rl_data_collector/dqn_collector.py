@@ -2,13 +2,14 @@ import os
 import json
 import time
 import numpy as np
+import gymnasium as gym
 from collections import defaultdict
 from datetime import datetime
 from tqdm import tqdm
 import pandas as pd
 from multiprocessing import Queue
+import argparse
 
-from openmines.src.utils.rl_env import MineEnv
 from openmines.src.utils.feature_processing import preprocess_observation
 
 
@@ -28,11 +29,12 @@ class NumpyEncoder(json.JSONEncoder):
 
 
 class DataCollector:
-    def __init__(self, env_config, episodes=100, max_steps=1000):
+    def __init__(self, env_config, episodes=100, max_steps=1000, env_id="mine/Mine-v1"):
         """初始化数据收集器"""
         self.env_config = env_config
         self.episodes = episodes
         self.max_steps = max_steps
+        self.env_id = env_id
         self.dataset = []
         self.all_states = []
         self.all_rewards = []  # 添加rewards列表用于存储所有奖励值
@@ -73,57 +75,75 @@ class DataCollector:
             total_samples = 0
             metrics = defaultdict(list)
             
-            # 创建环境
-            env = MineEnv.make(temp_config_path, log=False, ticks=False)
-            
-            for episode in tqdm(range(self.episodes), desc=f"Collecting episodes for {dispatcher}"):
-                observation, info = env.reset(seed=episode)
+            # 使用gym.make创建环境，而不是直接使用MineEnv
+            try:
+                # 创建环境时传入配置文件和reward_mode
+                env = gym.make(
+                    self.env_id, 
+                    config_file=temp_config_path, 
+                )
                 
-                episode_samples = 0
-                episode_reward = 0
-                last_production = 0
-                
-                for step in range(self.max_steps):
-                    expert_action = observation['info']['sug_action']
-                    state = self.preprocess_features(observation)
+                for episode in tqdm(range(self.episodes), desc=f"Collecting episodes for {dispatcher}"):
+                    observation, info = env.reset(seed=episode)
                     
-                    next_observation, reward, done, truncated, info = env.step(expert_action)
-                    self.all_rewards.append(reward)  # 收集reward
+                    episode_samples = 0
+                    episode_reward = 0
+                    last_production = 0
                     
-                    current_production = float(info['produce_tons'])
-                    production_increase = current_production - last_production
-                    last_production = current_production
-                    
-                    data_sample = {
-                        'dispatcher': dispatcher,
-                        'episode': int(episode),
-                        'step': int(step),
-                        'state': [float(x) for x in state],
-                        'action': int(expert_action),
-                        'reward': float(reward),  # 添加reward到数据样本中
-                        'event_type': observation['event_name'],
-                        'delta_time': float(observation['info']['delta_time']),
-                        'location': observation['the_truck_status']['truck_location'],
-                        'truck_name': observation['truck_name']
-                    }
-                    
-                    self.dataset.append(data_sample)
-                    self.all_states.append(state)
-                    episode_samples += 1
-                    
-                    episode_reward += reward
-                    
-                    if done or truncated:
-                        break
+                    for step in range(self.max_steps):
+                        expert_action = info.get("sug_action", 0)  # 使用info中的建议动作
                         
-                    observation = next_observation
+                        # 提取特征
+                        if isinstance(observation, dict):
+                            # 如果是字典格式，使用preprocess_observation函数
+                            state = self.preprocess_features(observation)
+                        else:
+                            # 如果是数组格式，直接使用
+                            state = observation
+                        
+                        next_observation, reward, done, truncated, info = env.step(expert_action)
+                        self.all_rewards.append(reward)  # 收集reward
+                        
+                        # 获取产出信息
+                        current_production = float(info.get('produce_tons', 0.0))
+                        production_increase = current_production - last_production
+                        last_production = current_production
+                        
+                        # 收集样本数据
+                        data_sample = {
+                            'dispatcher': dispatcher,
+                            'episode': int(episode),
+                            'step': int(step),
+                            'state': [float(x) for x in state],
+                            'action': int(expert_action),
+                            'reward': float(reward),
+                            'event_type': info.get('event_name', 'unknown'),
+                            'delta_time': float(info.get('delta_time', 0.0)),
+                            'location': info.get('truck_location', 'unknown'),
+                            'truck_name': info.get('truck_name', 'unknown')
+                        }
+                        
+                        self.dataset.append(data_sample)
+                        self.all_states.append(state)
+                        episode_samples += 1
+                        
+                        episode_reward += reward
+                        
+                        if done or truncated:
+                            break
+                            
+                        observation = next_observation
+                    
+                    metrics['episode_samples'].append(int(episode_samples))
+                    metrics['episode_rewards'].append(float(episode_reward))
+                    metrics['total_production'].append(float(last_production))
+                    total_samples += episode_samples
                 
-                metrics['episode_samples'].append(int(episode_samples))
-                metrics['episode_rewards'].append(float(episode_reward))
-                metrics['total_production'].append(float(last_production))
-                total_samples += episode_samples
-            
-            env.close()
+                env.close()
+                
+            except Exception as e:
+                print(f"环境创建或运行时出错: {str(e)}")
+                raise
             
             # 为每个调度器保存单独的指标
             dispatcher_metrics_path = os.path.join(self.output_dir, f"metrics_{dispatcher}.json")
@@ -147,8 +167,14 @@ class DataCollector:
         self._save_dataset(len(self.dataset), metrics)
 
     def preprocess_features(self, observation):
-        """使用导入的preprocess_observation函数"""
-        return preprocess_observation(observation, self.sim_time)
+        """使用导入的preprocess_observation函数处理特征"""
+        if hasattr(self, 'sim_time') and self.sim_time:
+            return preprocess_observation(observation, self.sim_time)
+        else:
+            # 尝试从observation中获取特征
+            if isinstance(observation, dict) and 'state' in observation:
+                return observation['state']
+            return observation
 
     def _save_dataset(self, total_samples, metrics):
         """保存数据集和计算标准化参数"""
@@ -175,7 +201,8 @@ class DataCollector:
             "reward_std": float(reward_std),
             "feature_dims": len(state_mean),
             "total_samples": total_samples,
-            "dispatchers": self.dispatchers
+            "dispatchers": self.dispatchers,
+            "env_id": self.env_id
         }
         
         params_path = os.path.join(self.output_dir, "normalization_params.json")
@@ -195,22 +222,23 @@ class DataCollector:
 
 
 if __name__ == "__main__":
-    import argparse
-
     parser = argparse.ArgumentParser(description="Collect dispatch decision data")
     parser.add_argument("--env_config", type=str,
-                        default="/Users/mac/PycharmProjects/truck_shovel_mix/sisymines_project/openmines/src/conf/north_pit_mine.json",
+                        default="../../../src/conf/north_pit_mine.json",
                         help="环境配置文件路径")
     parser.add_argument("--episodes", type=int, default=10,
                         help="收集数据的回合数")
     parser.add_argument("--max_steps", type=int, default=1000,
                         help="每个回合的最大步数")
+    parser.add_argument("--env_id", type=str, default="mine/Mine-v1",
+                        help="环境ID")
 
     args = parser.parse_args()
 
     collector = DataCollector(
         env_config=args.env_config,
         episodes=args.episodes,
-        max_steps=args.max_steps
+        max_steps=args.max_steps,
+        env_id=args.env_id
     )
     collector.collect_data()
