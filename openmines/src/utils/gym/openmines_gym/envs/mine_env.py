@@ -314,12 +314,12 @@ class ThreadMineEnv(gym.Env):
         pass
 
 
-class ThreadMineDenseEnv(GymMineEnv):
+class ThreadMineDenseEnv(ThreadMineEnv):
     """密集奖励的多线程矿山环境"""
     def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
         super().__init__(config_file=config_file, reward_mode="dense", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)
 
-class ThreadMineSparseEnv(GymMineEnv):
+class ThreadMineSparseEnv(ThreadMineEnv):
     """稀疏奖励的多线程矿山环境"""
     def __init__(self, config_file, sug_dispatcher:str="ShortestTripDispatcher", seed=42, log=False, ticks=False):
         super().__init__(config_file=config_file, reward_mode="sparse", sug_dispatcher=sug_dispatcher, seed=seed, log=log, ticks=ticks)

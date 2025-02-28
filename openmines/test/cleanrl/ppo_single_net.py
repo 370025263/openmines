@@ -65,7 +65,7 @@ class Args:
     max_grad_norm: float = 0.363605168165705
 
     # 其余保持不变
-    num_envs: int = 5
+    num_envs: int = 50
     num_steps: int = 1400
     anneal_lr: bool = True
     norm_adv: bool = True
@@ -101,6 +101,10 @@ class Args:
 
     r_mode: str = "reward_norm"  # 可选: "reward_norm", "return_norm", "none"
     """正则化模式选择: reward_norm - 使用预计算的统计值正则化reward, return_norm - 对每个batch的returns进行在线正则化"""
+
+    # 添加norm_path参数
+    norm_path: Optional[str] = None
+    """正则化参数文件的路径，如果不指定则使用默认路径或重新生成"""
 
 
 def make_env(env_id, idx, capture_video, run_name):
@@ -339,29 +343,34 @@ class CheckpointManager:
         return sorted(files)
 
 
-def manage_normalization_params(specified_path: Optional[str] = None, args: Optional[Args] = None) -> str:
+def manage_normalization_params(args: Optional[Args] = None) -> str:
     """
     管理正则化参数文件。
-    - 首先检查指定路径或当前工作目录是否存在参数文件
-    - 如果存在，询问用户是否使用（带倒计时）
-    - 如果不存在或用户选择不使用，则从dqn_collector收集新数据
     
     Args:
-        specified_path: 用户指定的参数文件路径
-        args: 程序参数，用于获取env_id和配置文件等信息
+        args: 程序参数，用于获取env_id、配置文件和norm_path等信息
         
     Returns:
         str: 参数文件的绝对路径
     """
+    # 首先检查args中指定的norm_path
+    if args and args.norm_path:
+        if os.path.isfile(args.norm_path):
+            print(f"使用指定的正则化参数文件: {args.norm_path}")
+            return args.norm_path
+        else:
+            print(f"警告: 指定的参数文件不存在: {args.norm_path}")
+    
+    # 如果没有指定norm_path或文件不存在，继续原有的逻辑
     param_file_name = "normalization_params.json"
     
     # 1. 检查指定路径或当前目录是否存在参数文件
     param_file_path = None
-    if specified_path:
-        if os.path.isfile(specified_path):
-            param_file_path = specified_path
+    if args and args.mine_config:
+        if os.path.isfile(args.mine_config):
+            param_file_path = args.mine_config
         else:
-            print(f"指定的参数文件不存在: {specified_path}")
+            print(f"指定的参数文件不存在: {args.mine_config}")
     
     # 检查当前目录
     if param_file_path is None:

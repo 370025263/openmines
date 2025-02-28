@@ -11,30 +11,45 @@ from openmines.src.mine import Mine
 from openmines.src.truck import Truck
 
 # 导入 rl_dispatch.py 中的 preprocess_observation 函数
-from openmines.src.dispatch_algorithms.rl_dispatch import RLDispatcher # 导入 preprocess_observation 和 RLDispatcher
+from openmines.src.dispatch_algorithms.rl_dispatch import RLDispatcher
 
 class PPODispatcher(BaseDispatcher):
     def __init__(self):
         super().__init__()
         self.name = "PPODispatcher"
-        self.model_path = "/home/weiyu/stone/openmines_project/openmines/openmines/test/cleanrl/checkpoints/mine/Mine-v1__ppo_single_net__s1__lr2.28e-03__e1.43e-02__g0.997__c0.20__l0.993__ep4__gr0.36__hs256__ns1400__ne50__mb4__rmreward_norm__t1740559741/best_model_step7420000_tons10343.7_reward0.00.pt"#os.path.join(os.path.dirname(__file__), "checkpoints", "mine", "Mine-v1__ppo_single_net__s1__lr2.28e-03__e1.43e-02__g0.997__c0.20__l0.993__ep4__gr0.36__hs256__ns1400__ne50__mb4__t1740381197", "best_model.pt")
+        self.model_path = os.path.join(os.path.dirname(__file__), "checkpoints", "mine", "Mine-v1__ppo_single_net__s1__lr2.28e-03__e1.43e-02__g0.997__c0.20__l0.993__ep4__gr0.36__hs256__ns1400__ne50__mb4__rmreward_norm__t1740559741", "best_model_step19670000_tons10812.1_reward0.00.pt")
+        self.device = self._get_device()  # 获取可用设备
         self.load_rl_model(self.model_path)
         self.rl_dispatcher_helper = RLDispatcher("NaiveDispatcher", reward_mode="dense")        
         self.max_sim_time = 240
+        
+    def _get_device(self):
+        """
+        确定使用的设备（CUDA/CPU）
+        """
+        if torch.cuda.is_available():
+            return torch.device("cuda")
+        else:
+            return torch.device("cpu")
         
     def load_rl_model(self, model_path: str):
         """
         Load an model for inference.
         """
         if not os.path.exists(model_path):
-            raise FileNotFoundError(f"ONNX model file not found: {model_path}")
-        from openmines.test.cleanrl.ppo_single_net import Agent,Args
-        import torch
+            raise FileNotFoundError(f"Model file not found: {model_path}")
+            
+        from openmines.test.cleanrl.ppo_single_net import Agent, Args
+        
         self.args = Args()
-        self.agent = Agent(envs=-1,args=self.args,norm_path="/home/weiyu/stone/openmines_project/openmines/normalization_params.json")
-        self.agent.load_state_dict(torch.load(model_path))
+        self.agent = Agent(envs=-1, args=self.args, 
+                         norm_path=os.path.join(os.path.dirname(__file__), "ppo_norm_params_dense.json"))
+        
+        # 加载模型时指定设备映射
+        state_dict = torch.load(model_path, map_location=self.device)
+        self.agent.load_state_dict(state_dict)
+        self.agent.to(self.device)  # 确保模型在正确的设备上
         self.agent.eval()
-
 
     def give_init_order(self, truck: Truck, mine: Mine) -> int:
         """
@@ -56,18 +71,19 @@ class PPODispatcher(BaseDispatcher):
 
     def _dispatch_action(self, truck: Truck, mine: Mine) -> int:
         """
-        Dispatch the truck to the next action based on ONNX model inference.
+        Dispatch the truck to the next action based on model inference.
         """
-
         from openmines.src.utils.feature_processing import preprocess_observation 
 
-        current_observation_raw = self._get_raw_observation(truck, mine) # 获取原始观察
-        processed_obs = torch.FloatTensor(preprocess_observation(current_observation_raw, self.max_sim_time)).to(self.agent.device) # 使用 preprocess_observation 进行预处理并转换为tensor
-        # to tensor
+        current_observation_raw = self._get_raw_observation(truck, mine)
+        processed_obs = torch.FloatTensor(
+            preprocess_observation(current_observation_raw, self.max_sim_time)
+        ).to(self.device)  # 确保输入数据在正确的设备上
         
-        action, logprob, _, value, _ = self.agent.get_action_and_value(
-                    processed_obs, sug_action=None
-                )        
+        with torch.no_grad():  # 推理时不需要梯度
+            action, logprob, _, value, _ = self.agent.get_action_and_value(
+                processed_obs, sug_action=None
+            )        
 
         return action
 
@@ -75,7 +91,7 @@ class PPODispatcher(BaseDispatcher):
         """
         获取原始的、未经预处理的观察值，直接复用 RLDispatcher 中的 _get_observation 方法
         """
-        return self.rl_dispatcher_helper._get_observation(truck, mine) # 直接调用 RLDispatcher 实例的 _get_observation
+        return self.rl_dispatcher_helper._get_observation(truck, mine)
 
 # Example usage (for testing - you'd integrate this into your simulation):
 if __name__ == "__main__":
