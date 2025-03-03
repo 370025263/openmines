@@ -141,6 +141,10 @@ def run_simulation(config_file=None):
     # 从配置文件中获取需要导入的调度器类型
     dispatcher_types = config['dispatcher']['type']
     
+    # 如果没有找到任何调度器，记录在这个变量中
+    missing_dispatchers = []
+    required_packages = {}
+
     # 只导入配置文件中指定的调度器
     for dispatcher_type in dispatcher_types:
         dispatcher_found = False
@@ -156,8 +160,11 @@ def run_simulation(config_file=None):
                 dispatcher_found = True
                 print(f"Successfully imported dispatcher: {dispatcher_type} (directly from package)")
                 continue
-        except Exception:
-            pass
+        except Exception as e:
+            # 记录可能需要的包
+            if "No module named" in str(e):
+                required_package = str(e).split("'")[1]
+                required_packages[dispatcher_type] = required_package
         
         # 第2种方法：尝试根据类名猜测模块名
         if not dispatcher_found:
@@ -174,8 +181,12 @@ def run_simulation(config_file=None):
                     dispatcher_found = True
                     print(f"Successfully imported dispatcher: {dispatcher_type} (from submodule)")
                     continue
-            except ImportError:
+            except ImportError as e:
                 print(f"Warning: Could not import module {potential_module_path}")
+                # 记录可能需要的包
+                if "No module named" in str(e):
+                    required_package = str(e).split("'")[1]
+                    required_packages[dispatcher_type] = required_package
         
         # 第3种方法：遍历所有子模块查找
         if not dispatcher_found:
@@ -195,12 +206,37 @@ def run_simulation(config_file=None):
                             module_found = True
                             break
                     except Exception as e:
+                        # 记录模块错误，并获取缺少的包
                         print(f"Error importing submodule {sub_module_name}: {e}")
+                        if "No module named" in str(e):
+                            required_package = str(e).split("'")[1]
+                            required_packages[dispatcher_type] = required_package
                 
                 if not module_found:
-                    print(f"Error: Dispatcher {dispatcher_type} not found in any submodule")
+                    missing_dispatchers.append(dispatcher_type)
             except Exception as e:
                 print(f"Error: Failed to import base module: {e}")
+                missing_dispatchers.append(dispatcher_type)
+
+    # 如果有未找到的调度器，终止程序并报错
+    if missing_dispatchers:
+        error_message = f"Error: Could not import the following dispatchers: {', '.join(missing_dispatchers)}"
+        
+        # 如果我们知道缺少的包，提供安装建议
+        if required_packages:
+            error_message += "\nMissing required packages:"
+            for disp, package in required_packages.items():
+                error_message += f"\n  - For {disp}: {package}"
+            error_message += "\n\nPlease install the required packages using pip:"
+            error_message += "\npip install " + " ".join(set(required_packages.values()))
+        
+        print(error_message)
+        sys.exit(1)  # 终止程序，返回错误码
+
+    # 如果没有找到任何调度器，终止程序
+    if not dispatchers_list:
+        print(f"Error: No dispatchers found for types: {', '.join(dispatcher_types)}")
+        sys.exit(1)
 
     # 开始运行对比实验
     for dispatcher in dispatchers_list:
