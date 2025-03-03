@@ -63,17 +63,41 @@ class LogAnalyzer:
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,
-                        stream=False  # 关闭流式输出
+                        stream=True  # 启用流式输出
                     )
-                    return response.choices[0].message.content
+                    # 处理流式响应
+                    collected_content = ""
+                    self.console.print("[cyan]正在生成分析...[/cyan]")
+                    for chunk in response:
+                        if hasattr(chunk.choices[0], 'delta') and hasattr(chunk.choices[0].delta, 'content'):
+                            content = chunk.choices[0].delta.content
+                            if content:
+                                collected_content += content
+                                # 打印进度指示
+                                self.console.print(content, end="")
+                    self.console.print("\n")
+                    return collected_content
                 else:
+                    # 旧版API的流式处理
                     response = self.client.ChatCompletion.create(
                         model=self.model_name,
                         messages=[{"role": "user", "content": prompt}],
                         temperature=0.3,
-                        stream=False  # 关闭流式输出
+                        stream=True  # 启用流式输出
                     )
-                    return response.choices[0].message.content
+                    # 处理流式响应
+                    collected_content = ""
+                    self.console.print("[cyan]正在生成分析...[/cyan]")
+                    for chunk in response:
+                        if 'choices' in chunk and len(chunk.choices) > 0:
+                            if 'delta' in chunk.choices[0] and 'content' in chunk.choices[0].delta:
+                                content = chunk.choices[0].delta.content
+                                if content:
+                                    collected_content += content
+                                    # 打印进度指示
+                                    self.console.print(content, end="")
+                    self.console.print("\n")
+                    return collected_content
                 
             except Exception as e:
                 self.console.print(f"[bold red]API调用失败，正在重试... 错误信息：{str(e)}[/bold red]")

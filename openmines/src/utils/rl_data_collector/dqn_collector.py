@@ -230,7 +230,7 @@ if __name__ == "__main__":
                         help="收集数据的回合数")
     parser.add_argument("--max_steps", type=int, default=1000,
                         help="每个回合的最大步数")
-    parser.add_argument("--env_id", type=str, default="mine/Mine-v1",
+    parser.add_argument("--env_id", type=str, default="mine/Mine-v1-dense",
                         help="环境ID")
 
     args = parser.parse_args()

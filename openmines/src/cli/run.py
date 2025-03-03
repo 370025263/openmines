@@ -360,17 +360,19 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
     c.draw_algo_based_fleet_ablation_experiment(scenes_data, baseline, target)
     c.save_ablation(tag="algo_ablation")
 
-def run_analysis(log_path, dispatcher_name=None):
+def run_analysis(log_path, dispatcher_name=None, model_name=None):
     """运行日志分析"""
     console = Console()
     try:
         # 从环境变量获取API配置
-        api_key = os.getenv('OPENAI_API_KEY')
-        api_base = os.getenv('OPENAI_API_BASE')
-        model_name = os.getenv('OPENAI_MODEL_NAME', 'deepseek-ai/DeepSeek-V3')  # 默认模型名称
+        api_key = os.getenv('OPENAI_API_KEY').strip()
         
-        if not api_key or not api_base:
-            console.print("[bold red]错误: 请设置环境变量 OPENAI_API_KEY 和 OPENAI_API_BASE[/bold red]")
+        api_base = os.getenv('OPENAI_API_BASE')
+        # 如果命令行参数中指定了模型，则使用指定的模型，否则使用环境变量或默认值
+        model = model_name or os.getenv('OPENAI_MODEL_NAME', 'deepseek-ai/DeepSeek-V3')  # 默认模型名称
+        print(f"Api key: {api_key}, Api base: {api_base}, Model: {model}")
+        if not api_key or not api_base or not model:
+            console.print("[bold red]错误: 请设置环境变量 OPENAI_API_KEY、OPENAI_API_BASE 和 OPENAI_MODEL_NAME[/bold red]")
             return
             
         # 检查路径是否存在
@@ -394,7 +396,7 @@ def run_analysis(log_path, dispatcher_name=None):
         analyzer = LogAnalyzer(
             api_key=api_key,
             api_base=api_base,
-            model_name=model_name
+            model_name=model
         )
         
         if dispatcher_name:
@@ -448,14 +450,33 @@ Examples:
   # Visualize simulation results
   openmines -v result.json
   
-  # Analyze logs
+  # Analyze logs (will use the latest log file if directory is specified)
   openmines -a logs/
+  
+  # Analyze logs with specific model
+  openmines -a logs/ --model "gpt-4"
+  
+  # Analyze logs for a specific dispatcher
+  openmines analyze logs/ -d "MyDispatcher"
+  
+  # Analyze logs with specific model and dispatcher
+  openmines analyze logs/ -m "gpt-4" -d "MyDispatcher"
   
   # Run fleet size ablation experiment on a single scene
   openmines scene_based_fleet_ablation -f config.json -m 10 -M 50
   
   # Run fleet size ablation experiment comparing algorithms across multiple scenes
   openmines algo_based_fleet_ablation -d configs/ -b NaiveDispatcher -t MyDispatcher -m 10 -M 100
+
+Analysis Usage:
+  The analyzer uses LLM to analyze simulation logs and generate insights.
+  
+  Required environment variables:
+    - OPENAI_API_KEY: Your API key
+    - OPENAI_API_BASE: API base URL (e.g., https://api.siliconflow.cn)
+    - OPENAI_MODEL_NAME: Default model name (optional, can be overridden with --model)
+  
+  The analysis report will be saved as a Markdown file in the current directory.
         ''')
     
     subparsers = parser.add_subparsers(help='commands', dest='command')
@@ -467,6 +488,8 @@ Examples:
                        help='Visualize simulation results from tick file. Will generate a GIF in $CWD/result/')
     parser.add_argument('-a', '--analyze', type=str,
                        help='Analyze log file or directory. If directory is specified, will analyze the latest log file')
+    parser.add_argument('--model', type=str,
+                       help='Specify the model to use for analysis')
 
     # add command 'run'
     run_parser = subparsers.add_parser('run', 
@@ -518,20 +541,24 @@ Examples:
                               help='Path to the log file or directory (will use latest log if directory)')
     analyze_parser.add_argument('-d', '--dispatcher', type=str, 
                               help='Specify dispatcher name to analyze')
+    analyze_parser.add_argument('-m', '--model', type=str, 
+                              help='Specify model name to use for analysis')
 
     args = parser.parse_args()
     
     # 处理分析命令
     if args.analyze is not None:
-        # 安全获取dispatcher参数
+        # 安全获取dispatcher和model参数
         dispatcher_name = getattr(args, 'dispatcher', None)
-        run_analysis(args.analyze, dispatcher_name)
+        model_name = args.model
+        run_analysis(args.analyze, dispatcher_name, model_name)
         return
         
     # 检查子命令
     if args.command == 'analyze':
         dispatcher_name = getattr(args, 'dispatcher', None)
-        run_analysis(args.log_path, dispatcher_name)
+        model_name = getattr(args, 'model', None)
+        run_analysis(args.log_path, dispatcher_name, model_name)
         return
         
     # 如command为空，那么检查f/v参数是否存在，如果不存在则print help；如果存在f/v参数则执行run/visualize
