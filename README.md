@@ -291,7 +291,6 @@ Openmines managed to itegrate the truck-dispatching problem with the gymnasium s
 ```python
 
 import gymnasium as gym
-import openmines_gym
 
 # Create environment
 env = gym.make('mine/Mine-v1-dense', config_file="./conf/north_pit_mine.json")  # or mine/Mine-v1-sparse

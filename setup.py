@@ -12,11 +12,7 @@ setup(
     author='stone91',
     description='Mining Fleet Dispatch Algorithm Framework',
     license='MIT',
-    packages=find_packages() + [
-        'openmines.src.utils.gym.openmines_gym',
-        'openmines.src.utils.gym.openmines_gym.envs',
-        'openmines.src.utils.gym.openmines_gym.wrappers'
-    ],
+    packages=find_packages(),
     package_data={
         'openmines': ['./src/utils/visualization/materials/*'],
     },
@@ -25,7 +21,7 @@ setup(
             'openmines=openmines.src.cli.run:main',
         ],
         'gymnasium.envs': [
-            'mine=openmines_gym:register_envs',
+            'mine=openmines.src.utils.gym.openmines_gym:register_envs',
         ],
     },
     install_requires=required + ['gymnasium==0.28.1'],
