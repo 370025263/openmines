@@ -360,8 +360,8 @@ def run_algo_based_fleet_ablation_experiment(config_dir, baseline, target, min_t
     c.draw_algo_based_fleet_ablation_experiment(scenes_data, baseline, target)
     c.save_ablation(tag="algo_ablation")
 
-def run_analysis(log_path, dispatcher_name=None, model_name=None):
-    """运行日志分析"""
+def run_analysis(log_path, dispatcher_name=None, model_name=None, language="English"):
+    """Run log analysis"""
     console = Console()
     try:
         # 从环境变量获取API配置
@@ -370,33 +370,34 @@ def run_analysis(log_path, dispatcher_name=None, model_name=None):
         api_base = os.getenv('OPENAI_API_BASE')
         # 如果命令行参数中指定了模型，则使用指定的模型，否则使用环境变量或默认值
         model = model_name or os.getenv('OPENAI_MODEL_NAME', 'deepseek-ai/DeepSeek-V3')  # 默认模型名称
-        print(f"Api key: {api_key}, Api base: {api_base}, Model: {model}")
+        print(f"Api key: {api_key}, Api base: {api_base}, Model: {model}, Language: {language}")
         if not api_key or not api_base or not model:
-            console.print("[bold red]错误: 请设置环境变量 OPENAI_API_KEY、OPENAI_API_BASE 和 OPENAI_MODEL_NAME[/bold red]")
+            console.print("[bold red]Error: Please set environment variables OPENAI_API_KEY, OPENAI_API_BASE, and OPENAI_MODEL_NAME[/bold red]")
             return
             
         # 检查路径是否存在
         path = pathlib.Path(log_path)
         if not path.exists():
-            console.print(f"[bold red]错误: 路径 {log_path} 不存在[/bold red]")
+            console.print(f"[bold red]Error: Path {log_path} does not exist[/bold red]")
             return
 
         # 如果是目录，分析最新的日志文件
         if path.is_dir():
             log_files = list(path.glob("*.log"))
             if not log_files:
-                console.print(f"[bold red]错误: 目录 {log_path} 中没有找到日志文件[/bold red]")
+                console.print(f"[bold red]Error: No log files found in directory {log_path}[/bold red]")
                 return
             # 按修改时间排序，取最新的
             latest_log = max(log_files, key=lambda x: x.stat().st_mtime)
             log_path = str(latest_log)
-            console.print(f"[bold blue]分析最新的日志文件: {latest_log.name}[/bold blue]")
+            console.print(f"[bold blue]Analyzing latest log file: {latest_log.name}[/bold blue]")
         
         # 初始化分析器
         analyzer = LogAnalyzer(
             api_key=api_key,
             api_base=api_base,
-            model_name=model
+            model_name=model,
+            language=language
         )
         
         if dispatcher_name:
@@ -425,18 +426,18 @@ def run_analysis(log_path, dispatcher_name=None, model_name=None):
         # 保存结果到当前工作目录
         output_file = pathlib.Path.cwd() / output_filename
         with open(output_file, "w", encoding="utf-8") as f:
-            f.write("# 矿山卡车调度分析报告\n\n")
-            f.write(f"- 分析时间: {current_time}\n")
-            f.write(f"- 仿真时间: {sim_time}\n")
+            f.write("# Mining Truck Dispatch Analysis Report\n\n")
+            f.write(f"- Analysis Time: {current_time}\n")
+            f.write(f"- Simulation Time: {sim_time}\n")
             if dispatcher_name:
-                f.write(f"- 调度算法: {dispatcher_name}\n")
+                f.write(f"- Dispatch Algorithm: {dispatcher_name}\n")
             f.write("\n---\n\n")
             f.write(analysis_result)
         
-        console.print(f"[bold green]✓ 分析完成，结果已保存至 {output_file}[/bold green]")
+        console.print(f"[bold green]✓ Analysis complete, results saved to {output_file}[/bold green]")
         
     except Exception as e:
-        console.print(f"[bold red]错误: {str(e)}[/bold red]")
+        console.print(f"[bold red]Error: {str(e)}[/bold red]")
 
 def main():
     parser = argparse.ArgumentParser(
@@ -456,11 +457,14 @@ Examples:
   # Analyze logs with specific model
   openmines -a logs/ --model "gpt-4"
   
+  # Analyze logs in Chinese
+  openmines -a logs/ --language "Chinese"
+  
   # Analyze logs for a specific dispatcher
   openmines analyze logs/ -d "MyDispatcher"
   
-  # Analyze logs with specific model and dispatcher
-  openmines analyze logs/ -m "gpt-4" -d "MyDispatcher"
+  # Analyze logs with specific model and language
+  openmines analyze logs/ -m "gpt-4" -l "Chinese"
   
   # Run fleet size ablation experiment on a single scene
   openmines scene_based_fleet_ablation -f config.json -m 10 -M 50
@@ -476,6 +480,9 @@ Analysis Usage:
     - OPENAI_API_BASE: API base URL (e.g., https://api.siliconflow.cn)
     - OPENAI_MODEL_NAME: Default model name (optional, can be overridden with --model)
   
+  Optional parameters:
+    - --language: Language for the analysis report (default: English)
+  
   The analysis report will be saved as a Markdown file in the current directory.
         ''')
     
@@ -490,6 +497,8 @@ Analysis Usage:
                        help='Analyze log file or directory. If directory is specified, will analyze the latest log file')
     parser.add_argument('--model', type=str,
                        help='Specify the model to use for analysis')
+    parser.add_argument('--language', type=str, default='English',
+                       help='Specify the language for the analysis report (default: English)')
 
     # add command 'run'
     run_parser = subparsers.add_parser('run', 
@@ -543,22 +552,26 @@ Analysis Usage:
                               help='Specify dispatcher name to analyze')
     analyze_parser.add_argument('-m', '--model', type=str, 
                               help='Specify model name to use for analysis')
+    analyze_parser.add_argument('-l', '--language', type=str, default='English',
+                              help='Specify language for the analysis report (default: English)')
 
     args = parser.parse_args()
     
     # 处理分析命令
     if args.analyze is not None:
-        # 安全获取dispatcher和model参数
+        # 安全获取参数
         dispatcher_name = getattr(args, 'dispatcher', None)
         model_name = args.model
-        run_analysis(args.analyze, dispatcher_name, model_name)
+        language = args.language
+        run_analysis(args.analyze, dispatcher_name, model_name, language)
         return
         
     # 检查子命令
     if args.command == 'analyze':
         dispatcher_name = getattr(args, 'dispatcher', None)
         model_name = getattr(args, 'model', None)
-        run_analysis(args.log_path, dispatcher_name, model_name)
+        language = getattr(args, 'language', 'English')
+        run_analysis(args.log_path, dispatcher_name, model_name, language)
         return
         
     # 如command为空，那么检查f/v参数是否存在，如果不存在则print help；如果存在f/v参数则执行run/visualize

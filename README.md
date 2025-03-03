@@ -108,8 +108,6 @@ The result will be a gif file in the `$CWD/result` folder.
 
 ---
 
-## 5. 如何编写新的调度算法
-
 ### 5. How to Write a New Dispatch Algorithm
 
 To write a new dispatch algorithm, you need to inherit from the `BaseDispatcher` class and implement the following three core methods:
@@ -296,7 +294,7 @@ import gymnasium as gym
 import openmines_gym
 
 # Create environment
-env = gym.make('mine/Mine-v1-dense', config_file="conf/north_pit_mine.json")  # or mine/Mine-v1-sparse
+env = gym.make('mine/Mine-v1-dense', config_file="./conf/north_pit_mine.json")  # or mine/Mine-v1-sparse
 
 # Reset environment
 obs, info = env.reset()
@@ -313,6 +311,3 @@ for _ in range(1000):
 env.close()
 
 ```
-
-### 8.1 install the openmines_gym
-
