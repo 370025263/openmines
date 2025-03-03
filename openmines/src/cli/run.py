@@ -29,6 +29,15 @@ from openmines.src.road import Road
 from openmines.src.dispatcher import BaseDispatcher
 from openmines.src.dispatch_algorithms import *
 
+# 添加包路径到sys.path
+import sys
+import os
+current_dir = os.path.dirname(os.path.abspath(__file__))
+# 假设当前文件在 openmines/src/cli 目录下
+project_root = os.path.abspath(os.path.join(current_dir, '..', '..', '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 def load_config(filename):
     # if Dict just return
     if isinstance(filename, dict):
@@ -107,25 +116,91 @@ def run_simulation(config_file=None):
     config = load_config(config_file)
     charter = Charter(config_file)
     states_dict = dict()
+    
     # 初始化调度器
-    # 定义dispatch_algorithms所在的路径
     dispatchers_package = 'openmines.src.dispatch_algorithms'
-    # 导入dispatch_algorithms包
-    dispatchers_module = importlib.import_module(dispatchers_package)
-    # 遍历dispatch_algorithms包中的所有模块
     dispatchers_list = []
-    for _, module_name, _ in pkgutil.iter_modules(dispatchers_module.__path__, dispatchers_package + '.'):
-        # 动态导入模块
-        module = importlib.import_module(module_name)
-        # 假设配置中指定的调度器类型
-        dispatcher_types:list = config['dispatcher']['type']
-        for dispatcher_type in dispatcher_types:
-            # 检查模块中是否有该类
+    
+    # 在导入之前添加调试信息
+    dispatcher_type = config['dispatcher']['type'][0]  # 假设至少有一个调度器
+    print(f"Trying to import dispatcher: {dispatcher_type}")
+
+    # 检查模块是否存在
+    try:
+        import inflection
+        module_name_guess = inflection.underscore(dispatcher_type)
+        module_path = f"openmines.src.dispatch_algorithms.{module_name_guess}"
+        spec = importlib.util.find_spec(module_path)
+        if spec:
+            print(f"Module {module_path} path: {spec.origin}")
+        else:
+            print(f"Module {module_path} does not exist!")
+    except Exception as e:
+        print(f"Error checking module: {e}")
+
+    # 从配置文件中获取需要导入的调度器类型
+    dispatcher_types = config['dispatcher']['type']
+    
+    # 只导入配置文件中指定的调度器
+    for dispatcher_type in dispatcher_types:
+        dispatcher_found = False
+        
+        # 第1种方法：尝试直接从总包中导入类
+        try:
+            # 直接从总包导入类
+            module = importlib.import_module('openmines.src.dispatch_algorithms')
             if hasattr(module, dispatcher_type):
                 dispatcher_class = getattr(module, dispatcher_type)
                 dispatcher = dispatcher_class()
-                if dispatcher.name not in [dispatcher.name for dispatcher in dispatchers_list]:
+                dispatchers_list.append(dispatcher)
+                dispatcher_found = True
+                print(f"Successfully imported dispatcher: {dispatcher_type} (directly from package)")
+                continue
+        except Exception:
+            pass
+        
+        # 第2种方法：尝试根据类名猜测模块名
+        if not dispatcher_found:
+            try:
+                import inflection
+                module_name_guess = inflection.underscore(dispatcher_type)
+                potential_module_path = f"openmines.src.dispatch_algorithms.{module_name_guess}"
+                
+                module = importlib.import_module(potential_module_path)
+                if hasattr(module, dispatcher_type):
+                    dispatcher_class = getattr(module, dispatcher_type)
+                    dispatcher = dispatcher_class()
                     dispatchers_list.append(dispatcher)
+                    dispatcher_found = True
+                    print(f"Successfully imported dispatcher: {dispatcher_type} (from submodule)")
+                    continue
+            except ImportError:
+                print(f"Warning: Could not import module {potential_module_path}")
+        
+        # 第3种方法：遍历所有子模块查找
+        if not dispatcher_found:
+            print(f"Trying to find dispatcher {dispatcher_type} in all submodules")
+            try:
+                base_module = importlib.import_module('openmines.src.dispatch_algorithms')
+                module_found = False
+                
+                for _, sub_module_name, _ in pkgutil.iter_modules(base_module.__path__, base_module.__name__ + '.'):
+                    try:
+                        sub_module = importlib.import_module(sub_module_name)
+                        if hasattr(sub_module, dispatcher_type):
+                            dispatcher_class = getattr(sub_module, dispatcher_type)
+                            dispatcher = dispatcher_class()
+                            dispatchers_list.append(dispatcher)
+                            print(f"Successfully imported dispatcher: {dispatcher_type} (from submodule {sub_module_name})")
+                            module_found = True
+                            break
+                    except Exception as e:
+                        print(f"Error importing submodule {sub_module_name}: {e}")
+                
+                if not module_found:
+                    print(f"Error: Dispatcher {dispatcher_type} not found in any submodule")
+            except Exception as e:
+                print(f"Error: Failed to import base module: {e}")
 
     # 开始运行对比实验
     for dispatcher in dispatchers_list:

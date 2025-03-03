@@ -9,10 +9,44 @@ import logging
 import pathlib
 import threading
 from typing import Optional, Dict, Any
+import importlib
+import pkgutil
+import re
+import inflection
 
 from openmines.src.utils.rl_env import prepare_env
 from openmines.src.utils.feature_processing import preprocess_observation
 
+
+def get_dispatcher_class(sug_dispatcher):
+    """根据调度器名称动态导入调度器类"""
+    dispatchers_package = 'openmines.src.dispatch_algorithms'
+    
+    # 使用inflection库进行转换
+    module_name_guess = inflection.underscore(sug_dispatcher)
+    potential_module_path = f"{dispatchers_package}.{module_name_guess}"
+    
+    try:
+        # 尝试导入模块
+        module = importlib.import_module(potential_module_path)
+        
+        # 检查模块中是否存在对应类
+        if hasattr(module, sug_dispatcher):
+            return getattr(module, sug_dispatcher)
+    except ImportError:
+        # 如果猜测的模块不存在，尝试从总包中导入
+        try:
+            module = importlib.import_module(dispatchers_package)
+            for _, sub_module_name, _ in pkgutil.iter_modules(module.__path__, dispatchers_package + '.'):
+                try:
+                    sub_module = importlib.import_module(sub_module_name)
+                    if hasattr(sub_module, sug_dispatcher):
+                        return getattr(sub_module, sug_dispatcher)
+                except ImportError:
+                    continue
+        except Exception:
+            pass
+    return None
 
 class GymMineEnv(gym.Env):
     """将矿山环境包装为标准的gym环境"""
@@ -102,6 +136,11 @@ class GymMineEnv(gym.Env):
         # 创建新的通信队列
         self.obs_queue = Queue()
         self.act_queue = Queue()
+        
+        # 获取建议的调度器,如果需要
+        if 'sug_dispatcher' in self.config:
+            sug_dispatcher = self.config['sug_dispatcher']
+            self.config['dispatcher'] = {'type': [sug_dispatcher]}
 
         # 启动新的环境进程
         self.process = multiprocessing.Process(
