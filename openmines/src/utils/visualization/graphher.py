@@ -8,13 +8,20 @@ import matplotlib.animation as animation
 import os
 
 from tqdm import tqdm
+import platform
 from matplotlib.font_manager import FontProperties
 
 # 定义字体属性
 legend_font = FontProperties(family='Times New Roman', size=8)
-
-plt.rcParams['font.family'] = 'PingFang HK'
+if platform.system() == 'Darwin':  # macOS
+    pass
+    #plt.rcParams['font.family'] = 'PingFang HK'
+elif platform.system() == 'Windows':  # Windows
+    plt.rcParams['font.family'] = 'SimHei'  # 常用的中文字体之一
+else:  # Linux or others
+    plt.rcParams['font.family'] = 'DejaVu Sans'  # 常用的跨平台字体
 plt.rcParams["axes.unicode_minus"] = False
+
 
 class VisualGrapher:
     def __init__(self, json_path):
@@ -32,6 +39,8 @@ class VisualGrapher:
         self.img_truck_unhauling = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_unhauling.png'))
         self.img_truck_initing = mpimg.imread(os.path.join(script_directory, 'materials', 'truck_initing.png'))
         self.img_dump = mpimg.imread(os.path.join(script_directory, 'materials', 'dump.png'))
+        self.img_repair = mpimg.imread(os.path.join(script_directory, 'materials', 'repair.png'))
+        self.img_unrepairable = mpimg.imread(os.path.join(script_directory, 'materials', 'unrepairable.png'))
 
     def update_progress(self, pbar):
         pbar.update()
@@ -106,6 +115,9 @@ class VisualGrapher:
         # 5. 绘制铲车并展示其产量和服务次数
         for shovel, shovel_data in tick_data['shovel_states'].items():
             self.place_image(shovel_data['position'], self.img_shovel, zoom=SHOVEL_SCALE)
+            if shovel_data["repair"]:
+                repair_position = (shovel_data['position'][0]+0.02, shovel_data['position'][1] + 0.01)
+                self.place_image(repair_position, self.img_repair, zoom=SHOVEL_SCALE*0.2)
             # 在图像底部展示铲车名称
             self.ax.text(shovel_data['position'][0], shovel_data['position'][1] - 0.04, shovel,
                          ha='center', va='bottom', fontsize=3)
@@ -124,10 +136,26 @@ class VisualGrapher:
                 img_truck = self.img_truck_hauling
             else:
                 img_truck = self.img_truck_initing
+            if truck_data['state'] == self.REPAIRING:
+                repair_position = (truck_data['position'][0] + 0.02, truck_data['position'][1] + 0.01)
+                self.place_image(repair_position, self.img_repair, zoom=TRUCK_SCALE * 0.6)
+            if truck_data['state'] == self.UNREPAIRABLE:
+                unrepairable_position = (truck_data['position'][0] + 0.02, truck_data['position'][1] + 0.01)
+                self.place_image(unrepairable_position, self.img_unrepairable, zoom=TRUCK_SCALE *0.6)
             self.place_image(truck_data['position'], img_truck, zoom=TRUCK_SCALE)
             self.ax.text(truck_data['position'][0], truck_data['position'][1] - 0.035, truck, ha='center', fontsize=3,
                          color='black')
 
+        # 绘制交通堵塞事件
+        jam_positions = mine_data.get("jams", {}).get("position", [])
+        lasting_times = mine_data.get("jams", {}).get("last_times", [])
+
+        for jam_position, lasting_time in zip(jam_positions, lasting_times):
+            # 绘制交通堵塞的位置
+            self.ax.plot(jam_position[0], jam_position[1], 'ro', markersize=5)  # 使用红色点（'ro'）
+            # 可选：显示堵塞持续时间
+            self.ax.text(jam_position[0], jam_position[1] + 0.02, f"{lasting_time:.2f}s", ha='center', fontsize=4,
+                         color='red')
 
     def place_image(self, xy, img, zoom=1):
         """
@@ -136,6 +164,9 @@ class VisualGrapher:
         :param img: 图像数组
         :param zoom: 图像的缩放级别
         """
+        # 当xy为负数时，表示图像不可见
+        if xy[0] < 0 or xy[1] < 0:
+            return
         im_offset = OffsetImage(img, zoom=zoom)
         ab = AnnotationBbox(im_offset, xy, frameon=False, box_alignment=(0.5, 0.5))
         self.ax.add_artist(ab)

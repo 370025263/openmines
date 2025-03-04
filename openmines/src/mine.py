@@ -6,11 +6,15 @@ LoadSite(Shovel)、DumpSite(Dumper)、
 ChargingSite(Truck)，Road，Dispatcher等对象
 最后调用Mine.run()方法开始仿真
 """
+import glob
 import os
 import time
+from datetime import datetime
 
+import numpy as np
 import simpy,logging,math
 from functools import reduce
+from multiprocessing import Queue
 
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dispatcher import BaseDispatcher
@@ -23,7 +27,7 @@ from openmines.src.utils.ticker import TickGenerator
 from openmines.src.utils.event import EventPool
 
 class Mine:
-    def __init__(self, name:str, log_path=LOG_FILE_PATH, log_file_level=logging.DEBUG, log_console_level=logging.INFO):
+    def __init__(self, name:str, log_path=LOG_FILE_PATH, log_file_level=logging.DEBUG, log_console_level=logging.INFO, seed=42):
         self.env = simpy.Environment()
         self.name = name
         self.load_sites = []
@@ -32,29 +36,30 @@ class Mine:
         self.road = None
         self.dispatcher = None
         self.random_event_pool = EventPool()  # 随机事件池
+        # rl
+        self.done = False
         # summary
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
         self.status = dict()  # the status of shovel
         # LOGGER配置
-        print(log_path)
+        # print(log_path)
         self.global_logger = MineLogger(log_path=log_path, file_level=log_file_level, console_level=log_console_level)
         self.mine_logger = self.global_logger.get_logger(name)
 
     def monitor_status(self, env, monitor_interval=1):
         """监控卸载区的产量、服务次数等信息
             监控道路的状态
+            Trigger BreakDown for truck
+            Trigger RoadEvent:jam
         """
         while True:
             """
             1.监控卸载区的产量、服务次数等信息
             """
             # 获取每个dumper信息并统计
-            for dump_site in self.dump_sites:
-                # 获取每个dumper信息并统计
-                for dumper in dump_site.dumper_list:
-                    self.produce_tons += dumper.dumper_tons
-                    self.service_count += dumper.service_count
+            self.produce_tons = sum([dump_site.produce_tons for dump_site in self.dump_sites])
+            self.service_count = sum([dump_site.service_count for dump_site in self.dump_sites])
             # 获取卡车整体的统计信息
             working_truck_count = 0
             waiting_truck_count = 0
@@ -99,6 +104,7 @@ class Mine:
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
                 # stats
+                "truck_count": len(self.trucks),
                 "working_truck_count": working_truck_count,
                 "waiting_truck_count": waiting_truck_count,
                 "load_unload_truck_count": load_unload_truck_count,
@@ -111,112 +117,112 @@ class Mine:
                 "truck_unrepairable": truck_unrepairable,
                 "random_event_count":random_event_count
             }
-            # reset
-            self.produce_tons = 0
-            self.service_count = 0
+            self.status["cur"] = self.status[int(env.now)]
             """
             2.监控道路的状态
             """
-            cur_time = env.now
-            # 获取mine的路网
-            road = self.road
-            charging_to_load_road = road.charging_to_load
-            road_matrix = road.road_matrix
-            # 获取每条路的状态
-            road_status = dict()
-            ## 统计初始化init过程中的道路情况
-            for i in range(self.road.load_site_num):
-                charging_site_name = self.charging_site.name
-                load_site_name = self.load_sites[i].name
-                road_status[(charging_site_name, load_site_name)] = {"truck_jam_count": 0, "repair_count": 0,
-                                                                 "truck_count": 0}
-                # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
-                ## 获取jam事件
-                jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
-                for jam_event in jam_events:
-                    """
-                    info={"name": self.name, "status": "jam", "speed": 0,
-                                                          "start_location": self.current_location.name,
-                                                            "end_location": self.target_location.name,
-                                                          "start_time": self.env.now, "est_end_time":
-                    """
-                    if jam_event.info["start_location"] == charging_site_name and jam_event.info[
-                        "end_location"] == load_site_name \
-                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                        road_status[(charging_site_name, load_site_name)]["truck_jam_count"] += 1
-                ## 获取repair事件
-                repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
-                for repair_event in repair_events:
-                    if repair_event.info["start_location"] == charging_site_name and repair_event.info[
-                        "end_location"] == load_site_name \
-                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info[
-                        "repair_end_time"] >= cur_time:
-                        road_status[(charging_site_name, load_site_name)]["repair_count"] += 1
-                ## 统计道路上的truck
-                for truck in self.trucks:
-                    if truck.current_location == charging_site_name and truck.target_location == load_site_name:
-                        road_status[(charging_site_name, load_site_name)]["truck_count"] += 1
+            self.update_road_status()
+            # 等待下一个监控时间点
+            """
+            3.更新矿车的breakdown(repair)状态
+            """
+            for truck in self.trucks:
+                truck.sample_breakdown()
 
-            ## 统计haul过程中的道路情况
+            """
+            4.在每个单位时间内，根据道路的交通流，触发堵车事件并存入池中.
+                每个矿车在出发的时候就会受到道路堵车事件的影响(truck.py)
+            """
+            # 遍历每一个道路
+            ## Init Road
+            for i in range(self.road.load_site_num):
+                charging_site = self.charging_site
+                load_site = self.load_sites[i]
+                # 从charging到load的道路
+                self.road.road_jam_sampling(start=charging_site, end=load_site)
+            ## Haul Road
             for i in range(self.road.load_site_num):
                 for j in range(self.road.dump_site_num):
-                    load_site_name = self.load_sites[i].name
-                    dump_site_name = self.dump_sites[j].name
-                    road_status[(load_site_name, dump_site_name)] = {"truck_jam_count": 0, "repair_count": 0, "truck_count": 0}
-
-                    # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
-                    ## 获取jam事件
-                    jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
-                    for jam_event in jam_events:
-                        """
-                        info={"name": self.name, "status": "jam", "speed": 0,
-                                                              "start_location": self.current_location.name,
-                                                                "end_location": self.target_location.name,
-                                                              "start_time": self.env.now, "est_end_time":
-                        """
-                        if jam_event.info["start_location"] == load_site_name and jam_event.info["end_location"] == dump_site_name \
-                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                            road_status[(load_site_name, dump_site_name)]["truck_jam_count"] += 1
-                    ## 获取repair事件
-                    repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
-                    for repair_event in repair_events:
-                        if repair_event.info["start_location"] == load_site_name and repair_event.info["end_location"] == dump_site_name \
-                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info["repair_end_time"] >= cur_time:
-                            road_status[(load_site_name, dump_site_name)]["repair_count"] += 1
-                    ## 统计道路上的truck
-                    for truck in self.trucks:
-                        if truck.current_location == load_site_name and truck.target_location == dump_site_name:
-                            road_status[(load_site_name, dump_site_name)]["truck_count"] += 1
-
-            ## 统计unhaul过程中的道路情况
+                    load_site = self.load_sites[i]
+                    dump_site = self.dump_sites[j]
+                    self.road.road_jam_sampling(start=load_site, end=dump_site)
+            ## Unhaul Road
             for j in range(self.road.dump_site_num):
                 for i in range(self.road.load_site_num):
-                    load_site_name = self.load_sites[i].name
-                    dump_site_name = self.dump_sites[j].name
-                    road_status[(dump_site_name,load_site_name)] = {"truck_jam_count": 0, "repair_count": 0, "truck_count": 0}
-
-                    # 统计道路上当前正在发生的随机事件个数、历史上发生的随机事件个数
-                    ## 获取jam事件
-                    jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
-                    for jam_event in jam_events:
-                        if jam_event.info["start_location"] == dump_site_name and jam_event.info["end_location"] == load_site_name \
-                            and jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
-                            road_status[(dump_site_name,load_site_name)]["truck_jam_count"] += 1
-                    ## 获取repair事件
-                    repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
-                    for repair_event in repair_events:
-                        if repair_event.info["start_location"] == dump_site_name and repair_event.info["end_location"] == load_site_name \
-                            and repair_event.info["repair_start_time"] <= cur_time and repair_event.info["repair_end_time"] >= cur_time:
-                            road_status[(dump_site_name,load_site_name)]["repair_count"] += 1
-                    ## 统计道路上的truck
-                    for truck in self.trucks:
-                        if truck.current_location == dump_site_name and truck.target_location == load_site_name:
-                            road_status[(dump_site_name,load_site_name)]["truck_count"] += 1
-
-            self.road.road_status = road_status
-
-            # 等待下一个监控时间点
+                    load_site = self.load_sites[i]
+                    dump_site = self.dump_sites[j]
+                    self.road.road_jam_sampling(start=dump_site, end=load_site)
             yield env.timeout(monitor_interval)
+
+    def update_road_status(self):
+        cur_time = self.env.now
+        road = self.road
+        road_status = dict()
+
+        # 【优化1】一次性获取 jam 和 repair 事件，并构建基于 (start_location, end_location) 的统计字典
+        jam_events_dict = {}
+        repair_events_dict = {}
+
+        jam_events = self.random_event_pool.get_even_by_type("RoadEvent:jam")
+        repair_events = self.random_event_pool.get_even_by_type("RoadEvent:repair")
+
+        for jam_event in jam_events:
+            start_loc = jam_event.info["start_location"]
+            end_loc = jam_event.info["end_location"]
+            if jam_event.info["start_time"] <= cur_time and jam_event.info["est_end_time"] >= cur_time:
+                jam_events_dict[(start_loc, end_loc)] = jam_events_dict.get((start_loc, end_loc), 0) + 1
+
+        for repair_event in repair_events:
+            start_loc = repair_event.info["start_location"]
+            end_loc = repair_event.info["end_location"]
+            if repair_event.info["repair_start_time"] <= cur_time and repair_event.info["repair_end_time"] >= cur_time:
+                repair_events_dict[(start_loc, end_loc)] = repair_events_dict.get((start_loc, end_loc), 0) + 1
+
+        # 【优化2】一次性统计卡车所在道路
+        truck_count_dict = {}
+        for truck in self.trucks:
+            if not truck.current_location or not truck.target_location:
+                continue
+            pair = (truck.current_location.name, truck.target_location.name)
+            truck_count_dict[pair] = truck_count_dict.get(pair, 0) + 1
+
+        # 下方三个循环逻辑与原来一致，只是由预先构造的 jam/repair/truck 字典来统计
+        # 1. charging_site -> load_sites
+        for i in range(self.road.load_site_num):
+            charging_site_name = self.charging_site.name
+            load_site_name = self.load_sites[i].name
+            road_status_key = (charging_site_name, load_site_name)
+            road_status[road_status_key] = {
+                "truck_jam_count": jam_events_dict.get(road_status_key, 0),
+                "repair_count": repair_events_dict.get(road_status_key, 0),
+                "truck_count": truck_count_dict.get(road_status_key, 0)
+            }
+
+        # 2. load_sites -> dump_sites
+        for i in range(self.road.load_site_num):
+            for j in range(self.road.dump_site_num):
+                load_site_name = self.load_sites[i].name
+                dump_site_name = self.dump_sites[j].name
+                road_status_key = (load_site_name, dump_site_name)
+                road_status[road_status_key] = {
+                    "truck_jam_count": jam_events_dict.get(road_status_key, 0),
+                    "repair_count": repair_events_dict.get(road_status_key, 0),
+                    "truck_count": truck_count_dict.get(road_status_key, 0)
+                }
+
+        # 3. dump_sites -> load_sites
+        for j in range(self.road.dump_site_num):
+            for i in range(self.road.load_site_num):
+                dump_site_name = self.dump_sites[j].name
+                load_site_name = self.load_sites[i].name
+                road_status_key = (dump_site_name, load_site_name)
+                road_status[road_status_key] = {
+                    "truck_jam_count": jam_events_dict.get(road_status_key, 0),
+                    "repair_count": repair_events_dict.get(road_status_key, 0),
+                    "truck_count": truck_count_dict.get(road_status_key, 0)
+                }
+
+        self.road.road_status = road_status
 
     def add_load_site(self, load_site:LoadSite):
         load_site.set_env(self.env)
@@ -319,7 +325,6 @@ class Mine:
                     return dumper
         return None
 
-
     def summary(self):
         """在仿真结束后，统计各个装载区和卸载区的产量、MatchingFactor等并记录在文件中
         目前统计的对象：
@@ -331,7 +336,6 @@ class Mine:
         :return:
         """
         pass
-
 
     def start(self, total_time:float=60*8)->dict:
         """
@@ -347,7 +351,8 @@ class Mine:
         assert len(self.trucks) > 0, "trucks can not be empty"
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
-        self.mine_logger.info("simulation started")
+        self.mine_logger.info(f"simulation started with dispatcher {self.dispatcher.__class__.__name__}")
+
         # start some monitor process for summary
         for load_site in self.load_sites:
             # 对停车场队列的监控
@@ -378,16 +383,18 @@ class Mine:
                 self.env.process(dumper.monitor_status(env=self.env))
         # 对矿山整体监控
         self.env.process(self.monitor_status(env=self.env))
+
         # log in the truck as process
         for truck in self.trucks:
             self.env.process(truck.run())
+
         self.env.run(until=total_time)
-        self.mine_logger.info("simulation finished")
+        self.mine_logger.info(f"simulation finished with dispatcher {self.dispatcher.__class__.__name__}")
         self.summary()
         ticks = self.dump_frames(total_time=total_time)
         return ticks
 
-    def start_rl(self, total_time:float=60*8)->dict:
+    def start_rl(self, obs_queue:Queue, act_queue:Queue, reward_mode:str = "dense", total_time:float=60*8, ticks:bool=False)->dict:
         """
         使用RL算法的仿真入口
         :param total_time:
@@ -402,6 +409,10 @@ class Mine:
         assert total_time > 0, "total_time can not be negative"
         self.total_time = total_time
         self.mine_logger.info("simulation started")
+        # pass queue to dispatcher
+        self.dispatcher.obs_queue = obs_queue
+        self.dispatcher.act_queue = act_queue
+
         # start some monitor process for summary
         for load_site in self.load_sites:
             # 对停车场队列的监控
@@ -436,10 +447,35 @@ class Mine:
         self.env.process(self.monitor_status(env=self.env))
         # log in the truck as process
         for truck in self.trucks:
-            self.env.process(truck.run(is_rl_training=True))
+            self.env.process(truck.run())
+        self.env.run(until=total_time)  # 在这里开一个独立的进程用于执行函数，后面大妈
 
+        # 当模拟结束的时候 最后发送一个ob和done等信息
+        ob = self.dispatcher.current_observation
+        info = ob["info"]
+        if reward_mode == "dense":
+            reward = self.dispatcher._get_reward_dense(self)
+        elif reward_mode == "sparse":
+           reward = self.dispatcher._get_reward_dense(self)
+        else:
+            raise ValueError(f"Unknown reward mode: {reward_mode}")
+        done = True
+        self.env.done = done
+        trucated = False
+        out = {
+            "ob": ob,
+            "info": info,
+            "reward": reward,
+            "truncated": trucated,
+            "done": done
+        }
+        self.mine_logger.info("simulation finished")
+        self.summary()
+        if ticks:
+            self.dump_frames(total_time=total_time, rl=True)
+        obs_queue.put(out, timeout=5)  # 将观察值放入队列
 
-    def dump_frames(self,total_time):
+    def dump_frames(self, total_time, rl=False):
         """使用TickGenerator记录仿真过程中的数据
         将数据写入到文件中
         :return:
@@ -447,9 +483,87 @@ class Mine:
         # tick generator
         self.tick_generator = TickGenerator(mine=self, tick_num=total_time)
         assert self.tick_generator is not None, "tick_generator can not be None"
+
         print("dumping frames...")
         self.tick_generator.run()
+
         # 获得年月日时分秒的字符串表示
-        time_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime())
-        ticks = self.tick_generator.write_to_file(file_name=f'MINE:{self.name}_ALGO:{self.dispatcher.name}_TIME:{time_str}.json')
+        time_str = time.strftime("%Y-%m-%d %H-%M-%S", time.localtime())
+
+        if rl:
+            # 使用指定的TickGenerator.result_path作为文件保存路径
+            result_path = self.tick_generator.result_path
+            if not os.path.exists(result_path):
+                os.makedirs(result_path)  # 如果路径不存在，则创建
+
+            # 查找当前目录下所有相关的文件，使用绝对路径进行查找
+            file_pattern = os.path.join(result_path, f'MINE-{self.name}-EP-*.json')
+            files = glob.glob(file_pattern)
+
+            # 解析文件名中的时间戳并排序
+            episodes = []
+            for file in files:
+                try:
+                    # 假设文件名格式为 'MINE—{self.name}-EP-{episode}-TIME-{time_str}.json'
+                    filename = os.path.basename(file)  # 只解析文件名部分
+                    parts = filename.split('-')
+                    episode = int(parts[3])  # 提取回合数
+                    file_time_str = '-'.join(parts[-5:]).split('.')[0]  # 提取时间戳
+                    file_time = datetime.strptime(file_time_str, "%Y-%m-%d %H-%M-%S")
+                    episodes.append((episode, file_time))
+                except (ValueError, IndexError):
+                    continue  # 文件名格式不正确，跳过
+
+            # 按时间戳排序并推断当前回合数
+            current_episode = 1
+            if episodes:
+                episodes.sort(key=lambda x: x[1])
+                current_episode = episodes[-1][0] + 1
+
+            # 写入RL仿真数据文件
+            ticks = self.tick_generator.write_to_file(
+                file_name=f'MINE-{self.name}-EP-{current_episode}-TIME-{time_str}.json')
+        else:
+            # 非RL部分代码保持不变
+            ticks = self.tick_generator.write_to_file(
+                file_name=f'MINE-{self.name}-ALGO-{self.dispatcher.name}-TIME-{time_str}.json')
+
         return ticks
+
+    @property
+    def match_factor(self):
+        # 统计MatchingFactor
+        # paper:Match factor for heterogeneous truck and loader fleets
+        shovels = [shovel for load_site in self.load_sites for shovel in load_site.shovel_list]
+        trucks = self.trucks
+        truck_cycle_time_avg = np.mean([truck.truck_cycle_time for truck in trucks])
+
+        num_trucks = len(self.trucks)
+        num_shovels = len(shovels)
+        loading_time: np.array = np.zeros((num_trucks, num_shovels))
+        for i, truck in enumerate(trucks):
+            for j, shovel in enumerate(shovels):
+                loading_time[i, j] = round((truck.truck_capacity / shovel.shovel_tons),
+                                           1) * shovel.shovel_cycle_time  # in mins
+
+        # 按行按列去重复
+        loading_time = np.unique(loading_time, axis=0)
+        unique_loading_time = np.unique(loading_time, axis=1).astype(int)
+        # 对异构铲车的子构数量进行统计
+        shovel_type_count = dict()
+        for i in range(unique_loading_time.shape[0]):  # truck type index
+            int_data = np.array(loading_time[i, :]).astype(int)
+            for value in set(int_data):
+                shovel_type_count[f'{i}_{value}'] = list(int_data).count(
+                    value)  # it means truck type i w.r.t shovel type num
+
+        # unique_loading_time = np.ones_like(unique_loading_time) + unique_loading_time
+        # 对每一行求lcm
+        lcm_load_time = np.lcm.reduce(unique_loading_time, axis=1)
+        upside_down_sum = 0
+        for i in range(unique_loading_time.shape[0]):
+            for j in range(unique_loading_time.shape[1]):
+                upside_down_sum += shovel_type_count[f'{i}_{unique_loading_time[i, j]}'] * (
+                            lcm_load_time[i] / unique_loading_time[i, j])
+        match_factor = (num_trucks * np.sum(lcm_load_time)) / (upside_down_sum * truck_cycle_time_avg)
+        return match_factor

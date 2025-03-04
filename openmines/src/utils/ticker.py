@@ -35,10 +35,9 @@ class TickGenerator:
         self.mine = mine
         self.tick_num = tick_num
         self.ticks = dict()
-        self.result_path = os.getcwd() + '/results'
+        self.result_path = os.path.join(os.getcwd(), 'results')
         if not os.path.exists(self.result_path):
             os.makedirs(self.result_path)
-
 
     def run(self):
         """
@@ -52,6 +51,7 @@ class TickGenerator:
         dump_sites = self.mine.dump_sites
         charging_site = self.mine.charging_site
         trucks = self.mine.trucks
+        jam_events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
 
         # 遍历产生每个tick
         for tick in range(self.tick_num):
@@ -63,6 +63,32 @@ class TickGenerator:
             shovel_states = dict()
             dumper_states = dict()
 
+            # ******可视化交通堵塞******
+            jam_positions = []
+            lasting_times = []
+            for jam_event in jam_events:
+                if jam_event.info["start_time"] <= cur_time < jam_event.info["est_end_time"]:
+                    jam_position = jam_event.info["jam_position"]
+                    #jam_duration = jam_event.info["est_end_time"] - jam_event.info["start_time"]
+                    start_location_name = jam_event.info["start_location"]
+                    target_location_name = jam_event.info["end_location"]
+                    target_location = self.mine.get_dest_obj_by_name(target_location_name)
+                    start_location = self.mine.get_dest_obj_by_name(start_location_name)
+                    direction = np.array(target_location.position) - np.array(start_location.position)
+                    # OUTPUT
+                    jam_position = np.array(start_location.position) + direction * jam_position
+                    lasting_time = jam_event.info["est_end_time"] - cur_time
+                    # 绘制一个红色的点再图中
+                    jam_positions.append(jam_position.tolist())
+                    lasting_times.append(lasting_time)
+            jam_tick = {
+                "name":f"jams",
+                "time":cur_time,
+                "position":jam_positions,
+                "last_times":lasting_times,
+            }
+
+            # ******可视化卡车******
             for truck in self.mine.trucks:
                 event_pool = truck.event_pool
                 # 判断卡车状态
@@ -75,6 +101,7 @@ class TickGenerator:
                 if len(past_events)==0:
                     status = -1  # 没有事件、仅有一个调度事件==还在空载状态，位置处于充电站
                     truck_position = np.array(charging_site.position) + np.array([0.0, 0.0])
+                    truck.truck_position = truck_position
                 ## 车辆在从充电场到装载点的路上
                 if len(past_events)==2 and past_events[-1].event_type=="init":
                     """init example:
@@ -90,11 +117,12 @@ class TickGenerator:
                     last_event = past_events[-1]
                     # 时间计算
                     cur_time_delta = cur_time - last_event.info["start_time"]
-                    time_ratio = cur_time_delta / (last_event.info["est_end_time"] - last_event.info["start_time"])
+                    time_ratio = cur_time_delta / (last_event.info["est_end_time"] - last_event.info["start_time"])  # duration和堵车的时间
                     # 方向计算
                     target_load_site = self.mine.get_dest_obj_by_name(last_event.info["target_location"])
                     direction = np.array(target_load_site.position) - np.array(charging_site.position)
                     truck_position = np.array(charging_site.position) + time_ratio * direction
+                    truck.truck_position = truck_position
 
                 ## 车辆在装载点等待装载
                 if past_events[-1].event_type=="wait shovel":
@@ -114,6 +142,7 @@ class TickGenerator:
                     shovel_name = past_events[-1].info["shovel"]
                     shovel = self.mine.get_service_vehicle_by_name(shovel_name)
                     truck_position = np.array(shovel.position) - np.array([0.05, 0.0]) - (queue_index+1)*np.array([0.035,0.0])  # 已经处理过
+                    truck.truck_position = truck_position
 
                 ## 车辆在装载点装载
                 if past_events[-1].event_type=="get shovel":
@@ -128,6 +157,7 @@ class TickGenerator:
                     shovel = self.mine.get_service_vehicle_by_name(past_events[-1].info["shovel"])
                     loading_position = np.array(shovel.position) - np.array([0.05, 0.0])
                     truck_position = loading_position
+                    truck.truck_position = truck_position
 
                 ## 车辆满载 从装载点前往卸载点中
                 if past_events[-1].event_type=="haul":
@@ -151,6 +181,7 @@ class TickGenerator:
                     target_unload_site = self.mine.get_dest_obj_by_name(last_event.info["target_location"])
                     direction = np.array(target_unload_site.position) - np.array(cur_load_site.position)
                     truck_position = np.array(cur_load_site.position) + time_ratio * direction
+                    truck.truck_position = truck_position
 
                 ## 车辆在卸载点等待卸载
                 if past_events[-1].event_type=="wait dumper":
@@ -166,6 +197,7 @@ class TickGenerator:
                     truck_cur_location_name = truck.current_location.name
                     parkinglot = self.mine.get_dest_obj_by_name(truck_cur_location_name).parking_lot
                     truck_position = np.array(parkinglot.position)  # 已经处理过
+                    truck.truck_position = truck_position
 
                 ## 车辆在卸载点卸载
                 if past_events[-1].event_type=="get dumper":
@@ -179,6 +211,7 @@ class TickGenerator:
                     # 卸载位置=卸载区位置+dumper相对位置偏移=dumper位置
                     dumper = self.mine.get_service_vehicle_by_name(past_events[-1].info["dumper"])
                     truck_position = np.array(dumper.position)  # 已经处理过
+                    truck.truck_position = truck_position
 
                 ## 车辆空载 从卸载点前往装载点中
                 if past_events[-1].event_type=="unhaul":
@@ -201,13 +234,43 @@ class TickGenerator:
                     target_load_site = self.mine.get_dest_obj_by_name(last_event.info["target_location"])
                     direction = np.array(target_load_site.position) - np.array(cur_unload_site.position)
                     truck_position = np.array(cur_unload_site.position) + time_ratio * direction
+                    truck.truck_position = truck_position
 
                 # 车辆损坏事件，则车辆在原地不动
                 if "breakdown" in past_events[-1].event_type:
-                    status = 6
+                    repair_event = past_events[-1]
+                    # 车辆损坏过程中，保持原位置
+                    if repair_event.info["start_time"] <= cur_time <= repair_event.info["end_time"]:
+                        status = 6
+                        # 计算卡车位置
+                        # 车辆损坏后位置=上一时间位置
+                        truck_position = truck.truck_position  # 已经处理过
+                    # 车辆损坏修复了，还在路上
+                    if repair_event.info["end_time"] < cur_time < past_events[-2].info["end_time"]:
+                        if past_events[-2].event_type == "init":
+                            status = -2  # 卡车已经得到了订单并且已经开始从充电站移动到第一个装载点
+                        if past_events[-2].event_type == "haul":
+                            status = 3
+                        if past_events[-2].event_type == "unhaul":
+                            status = 0
+                        # 计算卡车位置
+                        # 时间计算
+                        time_ratio = (cur_time - repair_event.info["repair_time"] - past_events[-2].info[
+                            "start_time"]) / (past_events[-2].info["end_time"] - repair_event.info["repair_time"] -
+                                              past_events[-2].info["start_time"])  # duration和堵车的时间
+                        # 方向计算
+                        start_location = self.mine.get_dest_obj_by_name(past_events[-1].info["start_location"])
+                        target_load_site = self.mine.get_dest_obj_by_name(past_events[-1].info["target_location"])
+                        direction = np.array(target_load_site.position) - np.array(start_location.position)
+                        truck_position = np.array(charging_site.position) + time_ratio * direction
+                        truck.truck_position = truck_position
+
+                if past_events[-1].event_type=="ORDER":
+                    status = 8
                     # 计算卡车位置
                     # 车辆损坏后位置=上一时间位置
-                    truck_position = truck_position  # 已经处理过
+                    truck_position = truck.current_location.position  # 已经处理过
+                    truck.truck_position = truck_position
 
                 if "unrepairable" in past_events[-1].event_type:
                     status = 7
@@ -216,6 +279,7 @@ class TickGenerator:
                     # 获取chargingSite位置
                     truck_position = np.array(self.mine.charging_site.position).astype(float)  # 已经处理过
 
+                truck_position = truck.truck_position
                 truck_state = {
                     "name":truck.name,
                     "time":cur_time,
@@ -250,6 +314,7 @@ class TickGenerator:
                     shovel_cur_state = shovel.status.get(cur_time,{"produced_tons":0,"service_count":0})
                     shovel_tick = {
                         "name":shovel.name,
+                        "repair":shovel.status[cur_time].get("repair", False),
                         "tons":shovel_cur_state["produced_tons"],
                         "service_count":shovel_cur_state["service_count"],
                         "time":cur_time,
@@ -308,6 +373,8 @@ class TickGenerator:
                 "load_unload_truck_count": mine_status["load_unload_truck_count"],
                 "moving_truck_count": mine_status["moving_truck_count"],
                 "repairing_truck_count": mine_status["repairing_truck_count"],
+                # visual events
+                "jams": jam_tick,
                 # event stats
                 "road_jam_count": mine_status["road_jam_count"],
                 "road_repair_count": mine_status["road_repair_count"],
@@ -361,7 +428,7 @@ class TickGenerator:
         for i in range(unique_loading_time.shape[0]):
             for j in range(unique_loading_time.shape[1]):
                 upside_down_sum += shovel_type_count[f'{i}_{unique_loading_time[i,j]}']*(lcm_load_time[i]/unique_loading_time[i,j])
-        match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg)
+        match_factor = (num_trucks*np.sum(lcm_load_time)) / (upside_down_sum*truck_cycle_time_avg) if truck_cycle_time_avg else 0
         print(f'MatchingFactor: {match_factor}')
         total_wait_time = sum([truck.get_wait_time() for truck in self.mine.trucks])
         print(f'TotalWaitTime: {total_wait_time}')
@@ -376,9 +443,14 @@ class TickGenerator:
             "TotalWaitTime":total_wait_time,
             "avg_time_per_order":avg_time_per_order,
             "total_order_count":total_order_count,
-            "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count']
+            "RoadJams":self.ticks[cur_time]['mine_states']['road_jam_count'],
+            "init_orders":self.mine.dispatcher.init_orders,
+            "haul_orders":self.mine.dispatcher.haul_orders,
+            "back_orders":self.mine.dispatcher.back_orders,
+            # meta
+            "load_sites_name":[load_site.name for load_site in self.mine.load_sites],
+            "dump_sites_name":[dump_site.name for dump_site in self.mine.dump_sites],
         }
-
 
     def write_to_file(self, file_name):
         """
@@ -391,6 +463,7 @@ class TickGenerator:
             try:
                 json.dump(self.ticks,f)
                 print("file_name:{} write success".format(file_name))
+                print(f"Path: {file_path}")
             except Exception as e:
                 print(e)
                 print("file_name:{} write failed".format(file_name))

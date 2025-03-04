@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 from scipy.stats import norm
 from simpy.resources.resource import Request
 
-
-
 from openmines.src.charging_site import ChargingSite
 from openmines.src.dump_site import DumpSite, Dumper
 from openmines.src.load_site import LoadSite, Shovel
@@ -61,6 +59,7 @@ class Truck:
         self.target_location = None
         self.journey_start_time = 0
         self.journey_coverage = None
+        self.pre_jam_time = 0
         self.last_breakdown_time = 0
         self.event_pool = EventPool()
         # the probalistics of the truck
@@ -68,6 +67,7 @@ class Truck:
         self.expected_working_time_until_unrepairable = 60*24*7*7  # in minutes
         self.repair_avg_time = 10
         self.repair_std_time = 3
+        self.repair_time = 0
         # truck status
         self.status = "idle"
         self.truck_load = 0  # in tons, the current load of the truck
@@ -77,6 +77,28 @@ class Truck:
         self.first_order_time = 0
         # RL
         self.current_decision_event = None
+
+    def get_location_onehot(self):
+        """获取车辆当前地点的标号, one-hot
+        """
+        charge_pos, load_pos, dump_pos = [0],[0]*len(self.mine.load_sites),[0]*len(self.mine.dump_sites)
+        if isinstance(self.current_location, DumpSite):
+            event_name = "unhaul"  # at dump site
+            for i, dump_site in enumerate(self.mine.dump_sites):
+                if dump_site.name == self.current_location.name:
+                    dump_pos[i] = 1
+                    return charge_pos + load_pos + dump_pos
+        elif isinstance(self.current_location, ChargingSite):
+            event_name = "init" # at charge site
+            charge_pos[0] = 1
+            return  charge_pos + load_pos + dump_pos
+        else:
+            event_name = "haul"  # at load site
+            for i, load_site in enumerate(self.mine.load_sites):
+                if load_site.name == self.current_location.name:
+                    load_pos[i] = 1
+                    return charge_pos + load_pos + dump_pos
+        return charge_pos + load_pos + dump_pos
 
     def set_env(self, mine:"Mine"):
         self.mine = mine
@@ -114,68 +136,44 @@ class Truck:
             # 如果发生故障，记录故障事件并进行维修
             breakdown_event = Event(self.last_breakdown_time, "TruckEvent:breakdown", f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes',
                       info={"name": self.name, "status": "breakdown",
-                            "start_time": self.env.now, "end_time": self.env.now + repair_time})
+                            "repair_time": repair_time,
+                            "start_location": self.current_location.name,
+                            "target_location": self.target_location.name,
+                            "start_time": self.last_breakdown_time, "end_time": self.last_breakdown_time + repair_time})
             self.event_pool.add_event(breakdown_event)
             self.mine.random_event_pool.add_event(breakdown_event)
             self.logger.info(f'Time:<{self.last_breakdown_time}> Truck:[{self.name}] breakdown for {repair_time} minutes at {self.last_breakdown_time}')
             # 进行维修（暂停运行）
             self.status = "repairing"
             yield self.env.timeout(repair_time)
+            self.repair_time = 0
+            self.status = "moving"
         """
         2.车辆运行过程中的堵车随机事件模拟
         """
         # 分析当前道路中的车辆情况，并随机生成一个延迟时间用来模拟交通堵塞
-        # 获取其他车辆的引用
-        other_trucks = self.mine.trucks
-        # 筛选出出发地和目的地跟本车相同的车辆
-        other_trucks_on_road = [truck for truck in other_trucks if truck.current_location == self.current_location and
-                                truck.target_location == self.target_location]
-        # 为每个同路的车辆根据当前时间计算route_coverage数值
-        for truck in other_trucks_on_road:
-            truck.journey_coverage = truck.get_route_coverage(distance)
-        # 假设每个车辆导致堵车的概率在route_coverage上满足正态分布，均值为route_coverage，方差为0.1
-        # other_trucks_on_road中的每个车导致堵车的概率会叠加在一起取平均成为最终的堵车概率分布
-        truck_positions = [truck.journey_coverage for truck in other_trucks_on_road]
-        # 每个卡车的正态分布的标准差
-        sd = 0.1  # 根据3sigma原则，这个值代表这个车辆对堵车的影响会在+-0.3总路程的范围内
-        # 位置的范围
-        x = np.linspace(0, 1, 1000)
-        # 初始化堵车的概率为0
-        total_prob = np.zeros_like(x)
-        # 对每辆卡车
-        for i, position in enumerate(truck_positions):
-            # 计算在每个位置的堵车概率
-            prob = norm.pdf(x, position, sd)
-            # 将这个卡车的堵车概率加到总的堵车概率上
-            total_prob = total_prob + prob
-        # 正规化总的堵车概率
-        total_prob = total_prob / len(truck_positions)
-        # 使用蒙特卡洛方法来决定是否会发生堵车
-        try:
-            if np.sum(total_prob) == 0:
-                probabilities = np.ones_like(total_prob) / len(total_prob)
-            else:
-                probabilities = total_prob / (np.sum(total_prob))
-            jam_position = np.random.choice(x, p=probabilities)
-        except:
-            print("bug")
-        # 在jam_position处使用weibull分布，采样一个可能的堵车时间
-        jam_time = np.random.weibull(2) * 10
-        time_to_jam = jam_position * duration
-        if time_to_jam < jam_time:
-            # 如果到达堵车区域的时间小于堵车时间，那么就会发生堵车
-            is_jam = True if len(truck_positions) > 3 else False
-            self.mine.random_event_pool.add_event(Event(self.env.now + time_to_jam, "RoadEvent:jam",
-                                                        f'Time:<{self.env.now + time_to_jam}> Truck:[{self.name}] is jammed at road from {self.current_location.name} '
-                                                        f'to {self.target_location.name} for {jam_time:.2f} minutes',
-                                                        info={"name": self.name, "status": "jam", "speed": 0,
-                                                              "start_location": self.current_location.name,
-                                                                "end_location": self.target_location.name,
-                                                              "start_time": self.env.now, "est_end_time": self.env.now + time_to_jam + jam_time}))
-            self.logger.info(f"Time:<{self.last_breakdown_time}> Truck:[{self.name}] is jammed at {self.current_location.name} to {self.target_location.name} for {jam_time:.2f} minutes")
-        else:
-            is_jam = False
-
+        # 读取已经存在的堵车事件
+        jam_events = self.mine.random_event_pool.get_even_by_type("RoadEvent:jam")
+        pre_jam_time = 0
+        pre_jam_count = 0
+        for jam_event in jam_events:
+            """
+            info={"name": self.name, "status": "jam", "speed": 0,
+                                                  "start_location": self.current_location.name,
+                                                    "end_location": self.target_location.name,
+                                                    "jam_position": jam_position,
+                                                  "start_time": self.env.now, "est_end_time":
+            """
+            if jam_event.info["start_location"] == self.current_location.name and jam_event.info["end_location"] == self.target_location.name \
+                    and jam_event.info["start_time"] <= self.env.now and jam_event.info["est_end_time"] >= self.env.now:
+                jam_time = jam_event.info["est_end_time"] - self.env.now  # 在车辆出发的这一刻，堵车事件还会持续的时间长度
+                jam_position = jam_event.info["jam_position"]
+                time_to_jam = jam_position * duration  # 车辆到达堵车区域的时间
+                pre_jam_time += max(0, jam_time - time_to_jam)
+                pre_jam_count += 1
+                self.pre_jam_time = pre_jam_time
+        if pre_jam_count > 0:
+            self.logger.info(f"Time:<{self.env.now}> Truck:[{self.name}] is facing {pre_jam_time} mins delay caused by {pre_jam_count} pre-existing jam events on Road from {self.current_location.name} to {self.target_location.name}")
 
         """
         3.车辆完全损坏的模拟(当车辆完全损坏就会被移除,车辆到指定时间后不会再发生移动，而是停留在原地
@@ -204,12 +202,12 @@ class Truck:
 
         self.event_pool.add_event(Event(self.env.now, event_name, f'Truck:[{self.name}] moves at {target_location.name}',
                                         info={"name": self.name, "status": event_name, "speed": manual_speed if manual_speed is not None else self.truck_speed,
-                                              "start_time": self.env.now, "est_end_time": self.env.now+duration, "end_time": None,
+                                              "start_time": self.env.now, "est_end_time": self.env.now + duration + pre_jam_time, "end_time": None,
                                               "start_location": self.current_location.name,
                                               "target_location": target_location.name,
                                               "distance": distance, "duration": None}))
         self.status = "moving"
-        yield self.env.timeout(duration+is_jam*jam_time)
+        yield self.env.timeout(duration + pre_jam_time)
         # 补全数据
         last_move_event = self.event_pool.get_last_event(type=event_name, strict=True)
         last_move_event.info["end_time"] = self.env.now
@@ -217,6 +215,7 @@ class Truck:
         # after arrival set current location
         assert type(self.current_location) != type(target_location), f"current_site and target_site should not be the same type of site "
         self.current_location = target_location
+        self.pre_jam_time = 0
 
     def load(self, shovel:Shovel):
         shovel_tons = shovel.shovel_tons
@@ -224,23 +223,31 @@ class Truck:
         load_time = (self.truck_capacity/shovel_tons) * shovel_cycle_time
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Start loading at shovel {shovel.name}, load time is {load_time}')
         self.status = "loading"
+        shovel.last_service_time = self.env.now  # 记录铲车上次服务时间, 用于计算等待时间
+        shovel.load_site.update_service_time()
         yield self.env.timeout(load_time)
         # 随机生成一个装载量 +-10%
         self.truck_load = self.truck_capacity*(1+np.random.uniform(-0.1, 0.1))
         shovel.produced_tons += self.truck_load
         shovel.service_count += 1
+        shovel.last_service_done_time = self.env.now  # 记录铲车上次服务完成时间
+        shovel.load_site.update_service_time()
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish loading at shovel {shovel.name}')
 
     def unload(self, dumper:Dumper):
         unload_time:float = dumper.dump_time
         self.status = "unloading"
+        dumper.last_service_time = self.env.now  # 记录卸载点上次服务时间, 用于计算等待时间
+        dumper.dump_site.update_service_time()
         yield self.env.timeout(unload_time)
         dumper.dumper_tons += self.truck_load
         self.total_load_count += self.truck_load
         self.service_count += 1
-        self.truck_cycle_time = (self.env.now - self.last_breakdown_time) / self.service_count
+        self.truck_cycle_time = (self.env.now - self.first_order_time) / self.service_count
         self.truck_load = 0
         dumper.service_count += 1
+        dumper.last_service_done_time = self.env.now  # 记录卸载点上次服务完成时间
+        dumper.dump_site.update_service_time()
         self.logger.info(f'Time:<{self.env.now}> Truck:[{self.name}] Finish unloading at dumper {dumper.name}, dumper tons is {dumper.dumper_tons}')
         # self.event_pool.add_event(Event(self.env.now, "unload", f'Truck:[{self.name}] Finish unloading at dumper {dumper.name}',
         #                           info={"name": self.name, "status": "unloading",
@@ -293,8 +300,10 @@ class Truck:
             dest_load_index: int = yield self.env.process(self.wait_for_decision())
         else:
             dest_load_index: int = self.dispatcher.give_init_order(truck=self, mine=self.mine)  # TODO:允许速度规划
+        self.status = "moving"
         self.first_order_time = self.env.now
         self.target_location = self.mine.load_sites[dest_load_index]
+        self.mine.update_road_status()  # manually update road status, since the monitor didn't start yet
 
         move_distance:float = self.mine.road.charging_to_load[dest_load_index]
         load_site: LoadSite = self.mine.load_sites[dest_load_index]
@@ -343,9 +352,36 @@ class Truck:
                 last_load_event = self.event_pool.get_last_event(type="get shovel", strict=True)
                 last_load_event.info["end_time"] = self.env.now
                 last_load_event.info["load_duration"] = self.env.now - last_load_event.info["start_time"]
+                # **铲车维护逻辑**
+                # 维护事件的发生由指数分布采样(lambda=1/480)
+                # 发生后维护时间由正态分布采样u=45, sig=5
+                time_to_next_maintenance = np.random.exponential(scale=60*24)  # 平均480分钟
+                if self.env.now >= shovel.last_breakdown_time + time_to_next_maintenance:
+                    # 触发维护
+                    shovel.repair = True
+                    maintenance_duration = max(np.random.normal(45, 5), 0)  # 确保为正值
+                    # 记录维护开始事件
+                    shovel.event_pool.add_event(Event(self.env.now, "Shovel Maintenance Start",
+                                                    f'Shovel {shovel.name} under maintenance for {maintenance_duration:.2f} minutes',
+                                                    info={"shovel": shovel.name, "status": "maintenance",
+                                                          "start_time": self.env.now, "end_time": self.env.now + maintenance_duration}))
+                    self.logger.info(f'Time:<{self.env.now}> Shovel {shovel.name} under maintenance for {maintenance_duration:.2f} minutes')
+                    # 执行维护（保持持有资源）
+                    yield self.env.timeout(maintenance_duration)
+                    # 记录维护完成事件
+                    shovel.repair = True
+                    shovel.event_pool.add_event(Event(self.env.now, "Shovel Maintenance Complete",
+                                                    f'Shovel {shovel.name} maintenance completed',
+                                                    info={"shovel": shovel.name, "status": "available",
+                                                          "end_time": self.env.now}))
+                    self.logger.info(f'Time:<{self.env.now}> Shovel {shovel.name} maintenance completed')
+                    # 更新最后一次维护时间
+                    shovel.last_breakdown_time = self.env.now
+                # **铲车维护逻辑结束**
 
             # 装载完毕，请求新的卸载区，并开始移动到卸载区
             self.status = "waiting for haul order"
+            self.mine.update_road_status()  # manually update road status, since the monitor may not distinguish the order at same integer time
             if is_rl_training:
                 # 等待RL agent给出决策;
                 dest_unload_index: int = yield self.env.process(self.wait_for_decision())
@@ -358,7 +394,7 @@ class Truck:
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_unload_index}): {dest_unload_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
-                                                  "start_time": self.env.now, "est_end_time": self.env.now+move_distance/self.truck_speed,
+                                                  "start_time": self.env.now, "est_end_time": self.env.now+(move_distance/self.truck_speed)*60,
                                                   "start_location": self.current_location.name,
                                                   "target_location": dest_unload_site.name, "speed": self.truck_speed,
                                                   "distance": move_distance, "order_index": dest_unload_index}))
@@ -406,6 +442,7 @@ class Truck:
             dest_load_site: LoadSite = self.mine.load_sites[dest_load_index]
             move_distance: float = self.mine.road.get_distance(truck=self, target_site=dest_load_site)
             self.target_location = dest_load_site
+            self.mine.update_road_status()  # manually update road status, since the monitor didn't start yet
             self.logger.debug(f"Time:<{self.env.now}> Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}")
             self.event_pool.add_event(Event(self.env.now, "ORDER", f'Truck:[{self.name}] Start moving to ORDER({dest_load_index}):{dest_load_site.name}, move distance is {move_distance}, speed: {self.truck_speed}',
                                             info={"name": self.name, "status": "ORDER",
@@ -451,7 +488,7 @@ class Truck:
 
         wait_shovel_event_time = sum([event.time_stamp for event in wait_shovel_events])
         end_wait_shovel_event_time = sum([event.time_stamp for event in end_wait_shovel_events])
-        wait_time = (end_wait_shovel_event_time - wait_shovel_event_time) / wait_shovel_event_count
+        wait_time = (end_wait_shovel_event_time - wait_shovel_event_time) / wait_shovel_event_count if wait_shovel_event_count else 0
         if wait_time == float('inf'):
             wait_time = 0
         return wait_time
@@ -461,6 +498,7 @@ class Truck:
         获取一次循环的路程覆盖率 0-1
         0代表刚刚出发 1代表完成
         这里只是一种近似，没有考虑到当前路途的交通情况
+        TODO: 考虑到当前路途的交通情况, 车辆损坏情况等，作为卡车属性进行更新
         :return:
         """
         assert distance > 0, "distance must be greater than 0"
@@ -473,15 +511,18 @@ class Truck:
         # 获取卡车的速度
         speed = self.truck_speed
         # 获取卡车的总共预期行驶时间
-        total_travel_time = (distance/speed)*60  # 单位：分钟
+        total_travel_time = (distance/speed)*60 + self.pre_jam_time + self.repair_time  # 单位：分钟
         # 获取卡车的路程覆盖率
         coverage = (current_time - self.journey_start_time)/total_travel_time
+        # TODO：道路检修事件转移到monitor中触发，从而维护一个更为精准的distance，从而获得更精准的coverage
+        if coverage > 1:
+            coverage = 1
         return coverage
 
-    def check_vehicle_availability(self):
+    def sample_breakdown(self):
         """
-        使用指数分布对卡车的可用性进行建模并采样，可能出现的状况包括故障需要维修。
-        :return: 维修持续时间（如果发生故障)
+        从指数分布中采样故障时间
+        :return:
         """
         # 使用指数分布计算故障发生的时间（载具正常工作时长）
         time_to_breakdown = np.random.exponential(self.expected_working_time_without_breakdown)
@@ -491,15 +532,16 @@ class Truck:
             repair_time = np.random.normal(self.repair_avg_time, self.repair_std_time)
             repair_time = max(repair_time, 0)  # 确保维修时间为正值
             # 更新最后一次故障时间
-            self.last_breakdown_time = self.last_breakdown_time + time_to_breakdown
-            """
-            TODO: 维修的判断依据有问题 很有可能多次采样叠加后self.last_breakdown_time依然是小于当前时间的
-            这里明天再修复 今天弄不了 脑子不好用了
-            """
-            return repair_time  # 发生故障则返回维修时间
+            self.last_breakdown_time = self.env.now  # self.last_breakdown_time + time_to_breakdown
+            self.repair_time = repair_time
+
+    def check_vehicle_availability(self):
+        """
+        使用指数分布对卡车的可用性进行建模并采样，可能出现的状况包括故障需要维修。
+        :return: 维修持续时间（如果发生故障)
+        """
         # 如果车辆发生无法维修的损坏，返回None；使用指数分布计算故障发生的时间
         # self.expected_working_time_until_unrepairable
-
         if self.env.now >= random.expovariate(1.0 / self.expected_working_time_until_unrepairable):
             return None
-        return 0  # 未发生故障则返回0维修时间
+        return self.repair_time  # 发生故障则返回维修时间

@@ -14,6 +14,9 @@ class Dumper:
         self.service_count = 0
         self.dump_time = dumper_cycle_time  # shovel-vehicle time took for one shovel of mine
         self.status = dict()  # the status of shovel
+        self.last_service_time = 0  # the last service time of shovel, the moment that the shovel start loading a truck
+        self.last_service_done_time = 0  # the last service done time of shovel, the moment that the shovel finish loading a truck
+        self.est_waiting_time = 0  # the estimated waiting time for the next truck
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -41,7 +44,17 @@ class DumpSite:
         self.status = dict()  # the status of shovel
         self.produce_tons = 0  # the produced tons of this dump site
         self.service_count = 0  # the number of shovel-vehicle cycle in this dump site
+        self.service_ability_ratio = 1  # the ability of dump site to serve trucks(0-1), the dumper may be breakdown
         self.estimated_queue_wait_time = 0  # the estimation of total waiting time for coming trucks in queue
+        self.avg_queue_wait_time = 0  # the average waiting time for coming trucks in queue
+        self.dump_site_productivity = 0
+        # service_time = min service time
+        self.last_service_time = 0  # 上一次服务Start时间
+        self.last_service_done_time = 0  # 上一次服务End时间
+
+    def update_service_time(self):
+        self.last_service_time = min([dumper.last_service_time for dumper in self.dumper_list])
+        self.last_service_done_time = min([dumper.last_service_done_time for dumper in self.dumper_list])
 
     def set_env(self, env:simpy.Environment):
         self.env = env
@@ -53,16 +66,16 @@ class DumpSite:
         """
         while True:
             # 获取每个dumper信息并统计
-            for dumper in self.dumper_list:
-                self.produce_tons += dumper.dumper_tons
-                self.service_count += dumper.service_count
+            self.produce_tons = sum(dumper.dumper_tons for dumper in self.dumper_list)
+            self.service_count = sum(dumper.service_count for dumper in self.dumper_list)
             self.status[int(env.now)] = {
                 "produced_tons": self.produce_tons,
                 "service_count": self.service_count,
             }
-            # reset
-            self.produce_tons = 0
-            self.service_count = 0
+            # 统计卸载区的卸载能力
+            dump_site_productivity = sum(
+                dumper.dumper_tons / dumper.dump_time for dumper in self.dumper_list)
+            self.dump_site_productivity = dump_site_productivity
             # 等待下一个监控时间点
             yield env.timeout(monitor_interval)
 
@@ -88,7 +101,6 @@ class DumpSite:
             name = f'{self.name}_parking_lot'
         park_position = tuple(a + b for a, b in zip(self.position, position_offset))
         self.parking_lot = ParkingLot(name=name, position=park_position)
-
 
     def get_available_dumper(self)->Dumper:
         """

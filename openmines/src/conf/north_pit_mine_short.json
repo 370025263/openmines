@@ -86,7 +86,10 @@
     }
   ],
   "road": {
-    "road_matrix": [[10,10,12],
+    "l2d_road_matrix": [[10,10,12],
+                     [12,10,12],
+                     [13,10,12]],
+    "d2l_road_matrix": [[10,10,12],
                      [12,10,12],
                      [13,10,12]],
     "charging_to_load_road_matrix": [10,10,10]
