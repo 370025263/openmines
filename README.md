@@ -8,13 +8,14 @@ Paper: [http://arxiv.org/abs/2404.00622](http://arxiv.org/abs/2404.00622)
 1. [Description](#description)  
 2. [Installation](#installation)  
 3. [Usage](#usage)  
-    1. [Create a Mine Configuration](#create-a-mine-configuration)  
-    2. [Create a Dispatch Algorithm](#create-a-dispatch-algorithm)  
-    3. [Run the Simulation](#run-the-simulation)  
-    4. [Visualize the Result](#visualize-the-result)  
-4. [How to Write a New Dispatch Algorithm](#how-to-write-a-new-dispatch-algorithm)  
-5. [OpenMines Objects and Available Properties (Reference)](#openmines-objects-and-available-properties-reference)  
-6. [More Command Line Usage](#more-command-line-usage)  
+    1. [Create a Mine Configuration](#1-create-a-mine-configuration)  
+    2. [Create a Dispatch Algorithm](#2-create-a-dispatch-algorithm)  
+    3. [Run the Simulation](#3-run-the-simulation)  
+    4. [Visualize the Result](#4-visualize-the-result)  
+4. [How to Write a New Dispatch Algorithm](#5-how-to-write-a-new-dispatch-algorithm)  
+5. [OpenMines Objects and Available Properties (Reference)](#6-openmines-objects-and-available-properties-reference)  
+6. [More Command Line Usage](#7-more-command-line-usage)  
+7. [Reinforcement Learning Support](#8-reinforcement-learning-support)  
 
 ## Description
 OpenMines is a Python-based simulation environment designed for truck dispatching in mining operations. It provides a flexible and extensible framework to model and simulate various mining scenarios from a complex-system perspective with probabilistic user-defined events, enabling researchers and practitioners to evaluate and compare different dispatching algorithms.
@@ -27,6 +28,10 @@ OpenMines is available on PyPI and can be installed using pip:
 ```shell
 pip install openmines
 ```
+
+## Video Demo
+[![Video Demo](./imgs/video.png)](https://www.youtube.com/watch?v=Mety6xu9WNk)
+
 
 ## Usage
 
