@@ -29,7 +29,7 @@ pip install openmines
 ```
 
 ## Video Demo
-<iframe width="560" height="315" src="https://www.youtube.com/embed/Mety6xu9WNk?si=YrnXcdYcRWDngX4A" title="YouTube video player" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" referrerpolicy="strict-origin-when-cross-origin" allowfullscreen></iframe>
+[![Video Demo](./imgs/video.png)](https://www.youtube.com/watch?v=Mety6xu9WNk)
 
 
 ## Usage
