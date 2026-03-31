@@ -159,8 +159,8 @@ class LoadSite:
         self.last_service_done_time = 0  # 上一次服务End时间
 
     def update_service_time(self):
-        self.last_service_time = min([shovel.last_service_time for shovel in self.shovel_list])
-        self.last_service_done_time = min([shovel.last_service_done_time for shovel in self.shovel_list])
+        self.last_service_time = max([shovel.last_service_time for shovel in self.shovel_list])
+        self.last_service_done_time = max([shovel.last_service_done_time for shovel in self.shovel_list])
 
     def set_env(self, env:simpy.Environment):
         self.env = env
