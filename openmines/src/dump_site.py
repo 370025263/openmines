@@ -53,8 +53,8 @@ class DumpSite:
         self.last_service_done_time = 0  # 上一次服务End时间
 
     def update_service_time(self):
-        self.last_service_time = min([dumper.last_service_time for dumper in self.dumper_list])
-        self.last_service_done_time = min([dumper.last_service_done_time for dumper in self.dumper_list])
+        self.last_service_time = max([dumper.last_service_time for dumper in self.dumper_list])
+        self.last_service_done_time = max([dumper.last_service_done_time for dumper in self.dumper_list])
 
     def set_env(self, env:simpy.Environment):
         self.env = env
