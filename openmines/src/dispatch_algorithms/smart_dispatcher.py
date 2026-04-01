@@ -1,11 +1,12 @@
 """
-SmartDispatcher: Enhanced dynamic dispatch based on ShortestTrip.
+SmartDispatcher v4: Arrival-time-aware + coordinated dispatch.
 
-Improvements over ShortestTripDispatcher:
-1. Dump site selection considers return trip quality (not just dump time)
-2. Separates "trucks on road" from "trucks in queue" to avoid double-counting
-3. Uses individual shovel/dumper availability instead of site-level averages
-4. Accounts for truck capacity differences in queue estimation
+Two key improvements over previous versions:
+1. Only counts trucks arriving BEFORE this truck in queue estimation
+2. Coordinated dispatch: when a truck picks a site, a "virtual load" is added
+   to that site's queue estimate for subsequent trucks within the same time
+   window, preventing multiple trucks from making identical greedy choices
+   (the herd effect).
 """
 from __future__ import annotations
 import numpy as np
@@ -19,153 +20,157 @@ class SmartDispatcher(BaseDispatcher):
     def __init__(self):
         super().__init__()
         self.name = "SmartDispatcher"
+        # Coordination state: tracks recent dispatch decisions
+        self._recent_ls_load = {}  # ls_idx → (time, accumulated_cap)
+        self._recent_ds_load = {}  # ds_idx → (time, accumulated_count)
+        self._coord_window = 1.0   # coordination window in sim minutes
 
-    def _road_trucks_to_load(self, mine, ls_idx):
-        """Trucks currently on road heading to this load site."""
-        ls = mine.load_sites[ls_idx]
-        total_cap = 0.0
-        for t in mine.trucks:
-            if (t.status == "moving" and t.target_location is not None
-                    and isinstance(t.target_location, LoadSite)
-                    and t.target_location.name == ls.name):
-                total_cap += t.truck_capacity
-        return total_cap
+    def _get_coord_load_ls(self, ls_idx, now):
+        """Get accumulated virtual load at a load site from recent dispatches."""
+        entry = self._recent_ls_load.get(ls_idx)
+        if entry and (now - entry[0]) < self._coord_window:
+            return entry[1]
+        return 0.0
 
-    def _road_trucks_to_dump(self, mine, ds_idx):
-        """Count trucks currently on road heading to this dump site."""
-        ds = mine.dump_sites[ds_idx]
+    def _get_coord_load_ds(self, ds_idx, now):
+        """Get accumulated virtual truck count at dump site from recent dispatches."""
+        entry = self._recent_ds_load.get(ds_idx)
+        if entry and (now - entry[0]) < self._coord_window:
+            return entry[1]
+        return 0
+
+    def _record_ls_dispatch(self, ls_idx, truck_cap, now):
+        """Record that a truck was dispatched to this load site."""
+        entry = self._recent_ls_load.get(ls_idx)
+        if entry and (now - entry[0]) < self._coord_window:
+            self._recent_ls_load[ls_idx] = (entry[0], entry[1] + truck_cap)
+        else:
+            self._recent_ls_load[ls_idx] = (now, truck_cap)
+
+    def _record_ds_dispatch(self, ds_idx, now):
+        """Record that a truck was dispatched to this dump site."""
+        entry = self._recent_ds_load.get(ds_idx)
+        if entry and (now - entry[0]) < self._coord_window:
+            self._recent_ds_load[ds_idx] = (entry[0], entry[1] + 1)
+        else:
+            self._recent_ds_load[ds_idx] = (now, 1)
+
+    def _trucks_arriving_before(self, mine, target, target_type, my_arrival_time):
+        """Count incoming trucks whose ETA is before ours."""
         count = 0
+        total_cap = 0.0
+        now = mine.env.now
         for t in mine.trucks:
             if (t.status == "moving" and t.target_location is not None
-                    and isinstance(t.target_location, DumpSite)
-                    and t.target_location.name == ds.name):
-                count += 1
-        return count
-
-    def _available_shovels(self, load_site):
-        """Count shovels not under maintenance."""
-        return sum(1 for s in load_site.shovel_list if not s.repair)
+                    and isinstance(t.target_location, target_type)
+                    and t.target_location.name == target.name):
+                their_eta = now
+                try:
+                    for etype in ["haul", "unhaul", "init"]:
+                        evt = t.event_pool.get_last_event(type=etype, strict=False)
+                        if evt and evt.info.get("est_end_time"):
+                            their_eta = evt.info["est_end_time"]
+                            break
+                except (KeyError, IndexError, AssertionError):
+                    their_eta = now
+                if their_eta <= my_arrival_time:
+                    count += 1
+                    total_cap += t.truck_capacity
+        return count, total_cap
 
     def _load_site_score(self, truck, mine, ls_idx, travel_dist):
-        """
-        Score a load site: lower = better.
-        Returns estimated time from departure to finish loading.
-        """
         ls = mine.load_sites[ls_idx]
         speed = truck.truck_speed
-        travel_time = 60.0 * travel_dist / speed
+        my_travel = 60.0 * travel_dist / speed
+        my_arrival = mine.env.now + my_travel
+        now = mine.env.now
 
-        # Productivity: only count non-broken shovels
-        active_shovels = self._available_shovels(ls)
-        if active_shovels == 0:
-            return float('inf')  # site is down
+        active_shovels = [s for s in ls.shovel_list if not s.repair]
+        if not active_shovels:
+            return float('inf')
+        n_active = len(active_shovels)
+        productivity = sum(s.shovel_tons / s.shovel_cycle_time for s in active_shovels)
+        service_time = truck.truck_capacity / (productivity / n_active)
 
-        productivity = sum(
-            s.shovel_tons / s.shovel_cycle_time
-            for s in ls.shovel_list if not s.repair
-        )
-        productivity = max(productivity, 0.01)
+        # Queue decays as we travel
+        queue_at_arrival = max(0, ls.estimated_queue_wait_time - my_travel)
 
-        # Service time for this truck at one shovel
-        service_time = truck.truck_capacity / (productivity / active_shovels)
+        # Only trucks arriving before us matter
+        _, incoming_cap = self._trucks_arriving_before(mine, ls, LoadSite, my_arrival)
+        incoming_wait = incoming_cap / productivity
 
-        # Queue estimation from the site's parking lot (already computed by framework)
-        queue_wait = ls.estimated_queue_wait_time
+        # Coordination: add virtual load from trucks dispatched in this window
+        coord_cap = self._get_coord_load_ls(ls_idx, now)
+        coord_wait = coord_cap / productivity
 
-        # Additional wait from trucks on road (not yet in queue)
-        road_cap = self._road_trucks_to_load(mine, ls_idx)
-        road_wait = road_cap / productivity
+        return my_travel + queue_at_arrival + incoming_wait + coord_wait + service_time
 
-        # Total estimated time
-        arrival = travel_time
-        queue_done = queue_wait + road_wait
-        wait_on_arrival = max(0, queue_done - arrival)
-
-        return travel_time + wait_on_arrival + service_time
-
-    def _dump_site_score(self, truck, mine, from_ls_idx, ds_idx):
-        """
-        Score a dump site: lower = better.
-        Returns estimated time from departure to finish unloading.
-        """
+    def _dump_site_score(self, truck, mine, ls_idx, ds_idx):
         ds = mine.dump_sites[ds_idx]
+        dist = mine.road.l2d_road_matrix[ls_idx, ds_idx]
         speed = truck.truck_speed
-        dist = mine.road.l2d_road_matrix[from_ls_idx, ds_idx]
-        travel_time = 60.0 * dist / speed
+        my_travel = 60.0 * dist / speed
+        my_arrival = mine.env.now + my_travel
+        now = mine.env.now
 
-        num_dumpers = len(ds.dumper_list)
+        n_dumpers = len(ds.dumper_list)
         dump_time = ds.dumper_list[0].dump_time if ds.dumper_list else 1.0
 
-        queue_wait = ds.estimated_queue_wait_time
-        road_count = self._road_trucks_to_dump(mine, ds_idx)
-        road_wait = (road_count / max(num_dumpers, 1)) * dump_time
+        queue_at_arrival = max(0, ds.estimated_queue_wait_time - my_travel)
 
-        arrival = travel_time
-        queue_done = queue_wait + road_wait
-        wait_on_arrival = max(0, queue_done - arrival)
+        count_before, _ = self._trucks_arriving_before(mine, ds, DumpSite, my_arrival)
+        incoming_wait = (count_before / max(n_dumpers, 1)) * dump_time
 
-        return travel_time + wait_on_arrival + dump_time
+        # Coordination: virtual load from recent dispatches
+        coord_count = self._get_coord_load_ds(ds_idx, now)
+        coord_wait = (coord_count / max(n_dumpers, 1)) * dump_time
 
-    def _best_return_load_time(self, truck, mine, ds_idx):
-        """Estimate the best load site reachable from this dump site."""
+        return my_travel + queue_at_arrival + incoming_wait + coord_wait + dump_time
+
+    def _best_return_time(self, truck, mine, ds_idx):
         best = float('inf')
-        for ls_idx in range(len(mine.load_sites)):
-            dist = mine.road.d2l_road_matrix[ls_idx, ds_idx]
-            score = self._load_site_score(truck, mine, ls_idx, dist)
+        for j in range(len(mine.load_sites)):
+            dist = mine.road.d2l_road_matrix[j, ds_idx]
+            score = self._load_site_score(truck, mine, j, dist)
             if score < best:
                 best = score
         return best
 
     def give_init_order(self, truck: "Truck", mine: "Mine") -> int:
-        """Choose load site with minimum (travel + queue + service) time."""
         best_idx = 0
         best_score = float('inf')
-
-        for ls_idx in range(len(mine.load_sites)):
-            dist = mine.road.charging_to_load[ls_idx]
-            score = self._load_site_score(truck, mine, ls_idx, dist)
+        for j in range(len(mine.load_sites)):
+            dist = mine.road.charging_to_load[j]
+            score = self._load_site_score(truck, mine, j, dist)
             if score < best_score:
                 best_score = score
-                best_idx = ls_idx
-
+                best_idx = j
+        self._record_ls_dispatch(best_idx, truck.truck_capacity, mine.env.now)
         return best_idx
 
     def give_haul_order(self, truck: "Truck", mine: "Mine") -> int:
-        """
-        Choose dump site minimizing (dump_time + alpha * return_time).
-        The return_time term prevents sending trucks to dump sites with
-        terrible return routes, even if the dump itself is fast.
-        """
-        current_location = truck.current_location
-        ls_idx = mine.load_sites.index(current_location)
-
+        ls_idx = mine.load_sites.index(truck.current_location)
         best_idx = 0
         best_score = float('inf')
-
-        for ds_idx in range(len(mine.dump_sites)):
-            dump_score = self._dump_site_score(truck, mine, ls_idx, ds_idx)
-            return_score = self._best_return_load_time(truck, mine, ds_idx)
-            # Weight: dump matters more (immediate), return is discounted
+        for k in range(len(mine.dump_sites)):
+            dump_score = self._dump_site_score(truck, mine, ls_idx, k)
+            return_score = self._best_return_time(truck, mine, k)
             score = dump_score + 0.5 * return_score
             if score < best_score:
                 best_score = score
-                best_idx = ds_idx
-
+                best_idx = k
+        self._record_ds_dispatch(best_idx, mine.env.now)
         return best_idx
 
     def give_back_order(self, truck: "Truck", mine: "Mine") -> int:
-        """Choose load site with minimum (travel + queue + service) time."""
-        current_location = truck.current_location
-        ds_idx = mine.dump_sites.index(current_location)
-
+        ds_idx = mine.dump_sites.index(truck.current_location)
         best_idx = 0
         best_score = float('inf')
-
-        for ls_idx in range(len(mine.load_sites)):
-            dist = mine.road.d2l_road_matrix[ls_idx, ds_idx]
-            score = self._load_site_score(truck, mine, ls_idx, dist)
+        for j in range(len(mine.load_sites)):
+            dist = mine.road.d2l_road_matrix[j, ds_idx]
+            score = self._load_site_score(truck, mine, j, dist)
             if score < best_score:
                 best_score = score
-                best_idx = ls_idx
-
+                best_idx = j
+        self._record_ls_dispatch(best_idx, truck.truck_capacity, mine.env.now)
         return best_idx
